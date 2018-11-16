@@ -1,0 +1,19 @@
+Tests: build
+Restrictions: superficial
+Depends:
+ build-essential,
+ libflatpak-dev,
+
+Tests: gnome-desktop-testing
+Restrictions: isolation-machine
+Depends:
+ flatpak-tests,
+ gnome-desktop-testing,
+ python3,
+
+Tests: oci
+Restrictions: isolation-machine, flaky
+Depends:
+ flatpak-tests,
+ gnome-desktop-testing,
+ python3,
