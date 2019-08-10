@@ -653,7 +653,7 @@ get_xdg_user_dir_from_string (const char  *filesystem,
       if (config_key)
         *config_key = NULL;
       if (dir)
-        *dir = g_get_user_runtime_dir ();
+        *dir = flatpak_get_real_xdg_runtime_dir ();
       return TRUE;
     }
 
@@ -759,7 +759,7 @@ flatpak_context_verify_filesystem (const char *filesystem_and_mode,
     return TRUE;
 
   g_set_error (error, G_OPTION_ERROR, G_OPTION_ERROR_FAILED,
-               _("Unknown filesystem location %s, valid locations are: host, home, xdg-*[/...], ~/dir, /dir"), filesystem);
+               _("Unknown filesystem location %s, valid locations are: host, home, xdg-*[/…], ~/dir, /dir"), filesystem);
   return FALSE;
 }
 
@@ -1114,7 +1114,7 @@ option_add_generic_policy_cb (const gchar *option_name,
   if (t == NULL)
     {
       g_set_error (error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
-                   _("--policy arguments must be in the form SUBSYSTEM.KEY=[!]VALUE"));
+                   _("--add-policy arguments must be in the form SUBSYSTEM.KEY=VALUE"));
       return FALSE;
     }
   policy_value = t + 1;
@@ -1122,14 +1122,14 @@ option_add_generic_policy_cb (const gchar *option_name,
   if (strchr (key, '.') == NULL)
     {
       g_set_error (error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
-                   _("--policy arguments must be in the form SUBSYSTEM.KEY=[!]VALUE"));
+                   _("--add-policy arguments must be in the form SUBSYSTEM.KEY=VALUE"));
       return FALSE;
     }
 
   if (policy_value[0] == '!')
     {
       g_set_error (error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
-                   _("--policy values can't start with \"!\""));
+                   _("--add-policy values can't start with \"!\""));
       return FALSE;
     }
 
@@ -1154,7 +1154,7 @@ option_remove_generic_policy_cb (const gchar *option_name,
   if (t == NULL)
     {
       g_set_error (error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
-                   _("--policy arguments must be in the form SUBSYSTEM.KEY=[!]VALUE"));
+                   _("--remove-policy arguments must be in the form SUBSYSTEM.KEY=VALUE"));
       return FALSE;
     }
   policy_value = t + 1;
@@ -1162,14 +1162,14 @@ option_remove_generic_policy_cb (const gchar *option_name,
   if (strchr (key, '.') == NULL)
     {
       g_set_error (error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
-                   _("--policy arguments must be in the form SUBSYSTEM.KEY=[!]VALUE"));
+                   _("--remove-policy arguments must be in the form SUBSYSTEM.KEY=VALUE"));
       return FALSE;
     }
 
   if (policy_value[0] == '!')
     {
       g_set_error (error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
-                   _("--policy values can't start with \"!\""));
+                   _("--remove-policy values can't start with \"!\""));
       return FALSE;
     }
 
@@ -2087,8 +2087,9 @@ flatpak_context_append_bwrap_filesystem (FlatpakContext  *context,
 
   if (app_id_dir != NULL)
     {
+      g_autofree char *user_runtime_dir = flatpak_get_real_xdg_runtime_dir ();
       g_autofree char *run_user_app_dst = g_strdup_printf ("/run/user/%d/app/%s", getuid (), app_id);
-      g_autofree char *run_user_app_src = g_build_filename (g_get_user_runtime_dir (), "app", app_id, NULL);
+      g_autofree char *run_user_app_src = g_build_filename (user_runtime_dir, "app", app_id, NULL);
 
       if (glnx_shutil_mkdir_p_at (AT_FDCWD,
                                   run_user_app_src,
