@@ -45,12 +45,13 @@ typedef enum {
   FLATPAK_RUN_FLAG_NO_DOCUMENTS_PORTAL = (1 << 15),
   FLATPAK_RUN_FLAG_BLUETOOTH          = (1 << 16),
   FLATPAK_RUN_FLAG_CANBUS            = (1 << 17),
+  FLATPAK_RUN_FLAG_DO_NOT_REAP        = (1 << 18),
+  FLATPAK_RUN_FLAG_NO_PROC            = (1 << 19),
 } FlatpakRunFlags;
 
 typedef struct FlatpakDir          FlatpakDir;
 typedef struct FlatpakDeploy       FlatpakDeploy;
 typedef struct FlatpakOciRegistry  FlatpakOciRegistry;
 typedef struct _FlatpakOciManifest FlatpakOciManifest;
-typedef struct FlatpakCompletion   FlatpakCompletion;
 
 #endif /* __FLATPAK_COMMON_TYPES_H__ */
