@@ -1581,11 +1581,13 @@ add_deps (FlatpakTransaction          *self,
   g_autofree char *runtime_remote = NULL;
   FlatpakTransactionOperation *runtime_op = NULL;
 
-  if (!g_str_has_prefix (op->ref, "app/"))
+  if (!op->resolved_metakey)
     return TRUE;
 
-  if (op->resolved_metakey)
+  if (g_str_has_prefix (op->ref, "app/"))
     runtime_ref = g_key_file_get_string (op->resolved_metakey, "Application", "runtime", NULL);
+  else
+    runtime_ref = g_key_file_get_string (op->resolved_metakey, "ExtensionOf", "runtime", NULL);
 
   if (runtime_ref == NULL)
     return TRUE;
@@ -1805,7 +1807,7 @@ flatpak_transaction_add_install_bundle (FlatpakTransaction *self,
 {
   FlatpakTransactionPrivate *priv = flatpak_transaction_get_instance_private (self);
 
-  priv->bundles = g_list_append (priv->flatpakrefs, bundle_data_new (file, gpg_data));
+  priv->bundles = g_list_append (priv->bundles, bundle_data_new (file, gpg_data));
 
   return TRUE;
 }
