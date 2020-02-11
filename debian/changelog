@@ -1,3 +1,21 @@
+flatpak (1.2.5-0+deb10u1) buster; urgency=medium
+
+  * New upstream stable release
+    - Allow runtimes (not just apps) to use extra_data, which is required
+      by the new org.freedesktop.Platform.openh264 extension
+    - Support apps that specify several required Flatpak versions,
+      such as 1.4.2;1.2.5; for runtimes that require the above feature
+    - Backport some crash bug fixes from 1.4.x
+    - Fix installation of bundles
+    - Set looser permissions on the /run/host/monitor directory, to
+      work better with tools like Fedora Toolbox on the host system
+    - Do not wrongly remove extensions as "unused" if they are referenced
+      by the 'versions' extension key rather than by 'version'
+  * d/gbp.conf: Use debian/buster packaging branch
+  * d/watch: Only look for 1.2.x releases
+
+ -- Simon McVittie <smcv@debian.org>  Mon, 23 Sep 2019 08:44:18 +0100
+
 flatpak (1.2.4-1) unstable; urgency=medium
 
   * New upstream stable release
