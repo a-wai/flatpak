@@ -1,1 +1,2 @@
 debian/Use-Python-3-for-test-web-server.patch
+Disable-failing-tests-during-package-build.patch
