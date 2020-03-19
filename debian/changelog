@@ -1,3 +1,11 @@
+flatpak (1.2.5-0+deb10u1co1) apertis; urgency=medium
+
+  * Apertis specific changes
+    - Add patch Disable-failing-tests-during-package-build.patch to
+      disable failing tests during build  (APERTIS-6847)
+
+ -- Ritesh Raj Sarraf <ritesh.sarraf@collabora.com>  Thu, 19 Mar 2020 21:02:23 +0530
+
 flatpak (1.2.5-0+deb10u1) buster; urgency=medium
 
   * New upstream stable release
