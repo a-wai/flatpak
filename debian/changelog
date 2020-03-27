@@ -2,7 +2,10 @@ flatpak (1.2.5-0+deb10u1co1) apertis; urgency=medium
 
   * Apertis specific changes
     - Add patch Disable-failing-tests-during-package-build.patch to
-      disable failing tests during build  (APERTIS-6847)
+      disable failing tests during build  (APERTIS-6847). The Apertis version of
+      OSTree does not include GPG support because of GPLv3. Thus, when the
+      flatpak tests using gpg signatures are run, libostree returns errors
+      reporting that the "GPG feature is disabled in a build time".
 
  -- Ritesh Raj Sarraf <ritesh.sarraf@collabora.com>  Thu, 19 Mar 2020 21:02:23 +0530
 
