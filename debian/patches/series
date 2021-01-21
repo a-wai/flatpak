@@ -1,1 +1,12 @@
+run-Convert-all-environment-variables-into-bwrap-argument.patch
+tests-Add-minimal-version-of-ok-helper.patch
+tests-Expand-coverage-for-environment-variable-overrides.patch
+common-Move-flatpak_buffer_to_sealed_memfd_or_tmpfile-to-.patch
+context-Add-env-fd-option.patch
+portal-Convert-env-in-extra-args-into-env-fd.patch
+tests-Exercise-env-fd.patch
+portal-Do-not-use-caller-supplied-variables-in-environmen.patch
+tests-Assert-that-env-does-not-go-in-flatpak-run-or-bwrap.patch
+build-Convert-environment-into-a-sequence-of-bwrap-argume.patch
+dir-Pass-environment-via-bwrap-setenv-when-running-apply_.patch
 debian/Use-Python-3-for-test-web-server.patch

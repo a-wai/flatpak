@@ -1,3 +1,26 @@
+flatpak (1.2.5-0+deb10u3) buster-security; urgency=medium
+
+  * Fix regressions in DSA 4830-1
+    - Add patch from upstream to fix a regression in 'flatpak build'.
+      The patches to resolve CVE-2021-21261 caused a regression in which
+      'flatpak build' wouldn't set the LD_LIBRARY_PATH that it should.
+      (Closes: #980323)
+    - Add a patch from upstream to fix possible regressions in extra-data.
+      The extra-data mechanism, used to download large or proprietary
+      components out-of-band, could suffer from a regression similar to
+      #980323 if the app or runtime's apply_extra entry point relies on
+      LD_LIBRARY_PATH.
+  * Add CVE-2021-21261 reference to previous changelog entry
+
+ -- Simon McVittie <smcv@debian.org>  Thu, 21 Jan 2021 13:57:39 +0000
+
+flatpak (1.2.5-0+deb10u2) buster-security; urgency=medium
+
+  * Add patches for sandbox escape vulnerability GHSA-4ppf-fxf6-vxg2
+    (CVE-2021-21261)
+
+ -- Simon McVittie <smcv@debian.org>  Tue, 12 Jan 2021 16:23:32 +0000
+
 flatpak (1.2.5-0+deb10u1) buster; urgency=medium
 
   * New upstream stable release
