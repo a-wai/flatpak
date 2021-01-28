@@ -25,11 +25,13 @@ SUBDIRS += po
 %.service: %.service.in config.log
 	$(AM_V_GEN) $(SED) -e "s|\@libexecdir\@|$(libexecdir)|" \
 		-e "s|\@localstatedir\@|$(localstatedir)|" \
+		-e "s|\@media_dir\@|$(RUN_MEDIA_DIR)|" \
 		-e "s|\@extraargs\@||" $< > $@
 
 dbus_servicedir = $(DBUS_SERVICE_DIR)
 service_in_files = $(NULL)
 dbus_service_DATA = $(NULL)
+systemdsystemunit_DATA = $(NULL)
 systemduserunit_DATA = $(NULL)
 CLEANFILES += $(dbus_service_DATA)
 CLEANFILES += $(systemduserunit_DATA)
@@ -45,6 +47,7 @@ AM_CPPFLAGS =							\
 	-DFLATPAK_BASEDIR=\"$(pkgdatadir)\"			\
 	-DFLATPAK_TRIGGERDIR=\"$(pkgdatadir)/triggers\"		\
 	-DSYSTEM_FONTS_DIR=\"$(SYSTEM_FONTS_DIR)\"		\
+	-DSYSTEM_HELPER_USER=\"$(SYSTEM_HELPER_USER)\"          \
 	-DSYSTEM_FONT_CACHE_DIRS=\"$(SYSTEM_FONT_CACHE_DIRS)\"		\
 	-DG_LOG_DOMAIN=\"flatpak\"				\
 	-I$(srcdir)/libglnx					\
@@ -53,7 +56,13 @@ AM_CPPFLAGS =							\
 	-include "config.h"					\
 	$(NULL)
 
-AM_CFLAGS = $(WARN_CFLAGS)
+ASAN_FLAGS=
+if ENABLE_ASAN
+ASAN_FLAGS = -fsanitize=undefined -fsanitize-undefined-trap-on-error -fsanitize=address
+endif
+
+AM_CFLAGS = $(WARN_CFLAGS) $(ASAN_FLAGS)
+AM_LDFLAGS = $(ASAN_FLAGS)
 
 if WITH_SYSTEM_BWRAP
 AM_CPPFLAGS += -DHELPER=\"$(BWRAP)\"
@@ -96,7 +105,11 @@ include app/Makefile.am.inc
 include session-helper/Makefile.am.inc
 include portal/Makefile.am.inc
 include system-helper/Makefile.am.inc
+include oci-authenticator/Makefile.am.inc
 include icon-validator/Makefile.am.inc
+include revokefs/Makefile.am.inc
+include selinux/Makefile.am.inc
+include sideload-repos-systemd/Makefile.am.inc
 include tests/Makefile.am.inc
 
 if !WITH_SYSTEM_DBUS_PROXY
@@ -140,21 +153,32 @@ zshcompletiondir = $(datadir)/zsh/site-functions
 zshcompletion_DATA = completion/_flatpak
 EXTRA_DIST += $(zshcompletion_DATA)
 
+fishcompletiondir = $(datadir)/fish/vendor_completions.d
+fishcompletion_DATA = completion/flatpak.fish
+EXTRA_DIST += $(fishcompletion_DATA)
+
 profiledir = $(PROFILE_DIR)
 profile_DATA = profile/flatpak.sh
 EXTRA_DIST += $(profile_DATA)
 
 envdir = $(datadir)/gdm/env.d
-env_DATA = flatpak.env
-EXTRA_DIST += env.d/flatpak.env.in env.d/60-flatpak
+env_DATA =
+if INSTALL_GDM_ENV_FILE
+env_DATA += flatpak.env
+endif
+
+EXTRA_DIST += env.d/flatpak.env.in env.d/60-flatpak env.d/60-flatpak-system-only
 DISTCLEANFILES += flatpak.env
 
 flatpak.env: env.d/flatpak.env.in
 	$(AM_V_GEN) $(SED) -e "s|\@localstatedir\@|$(localstatedir)|" \
 		-e "s|\@sysconfdir\@|$(sysconfdir)|" $< > $@
 
-envgendir = $(systemduserenvgendir)
-envgen_SCRIPTS = env.d/60-flatpak
+systemenvgendir = $(systemdsystemenvgendir)
+systemenvgen_SCRIPTS = env.d/60-flatpak-system-only
+
+userenvgendir = $(systemduserenvgendir)
+userenvgen_SCRIPTS = env.d/60-flatpak
 
 pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = flatpak.pc
@@ -163,6 +187,10 @@ EXTRA_DIST += flatpak.pc.in
 scriptsdir = $(bindir)
 scripts_SCRIPTS = scripts/flatpak-bisect scripts/flatpak-coredumpctl
 EXTRA_DIST += scripts/flatpak-bisect scripts/flatpak-coredumpctl
+
+EXTRA_DIST += variant-schema-compiler/variant-schema-compiler
+
+EXTRA_DIST += autogen.sh
 
 EXTRA_DIST += README.md
 

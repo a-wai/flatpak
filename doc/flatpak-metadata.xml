@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
-    "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
+    "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 
 <refentry id="flatpak-metadata">
 
@@ -118,10 +118,12 @@
                 <varlistentry>
                     <term><option>tags</option> (string list)</term>
                     <listitem><para>
-                        Tags to include in AppStream XML.
+                        Tags to include in AppStream XML. Typical values
+                        in use on Flathub include
+                        <option>beta</option>, <option>stable</option>,
+                        <option>proprietary</option>
+                        and <option>upstream-maintained</option>.
                         Available since 0.4.12.
-                        <!-- TODO: what are these tags for? What should they
-                        be? -->
                     </para></listitem>
                 </varlistentry>
             </variablelist>
@@ -149,7 +151,8 @@
                     <term><option>sockets</option> (list)</term>
                     <listitem><para>
                         List of well-known sockets to make available in the sandbox.
-                        Possible sockets: x11, wayland, fallback-x11, pulseaudio, session-bus, system-bus, ssh-auth.
+                        Possible sockets: x11, wayland, fallback-x11, pulseaudio, session-bus, system-bus,
+                        ssh-auth, pcsc, cups.
                         When making a socket available, flatpak also sets
                         well-known environment variables like DISPLAY or
                         DBUS_SYSTEM_BUS_ADDRESS to let the application
@@ -181,8 +184,15 @@
 
                             <varlistentry><term><option>all</option></term>
                             <listitem><para>
-                                All device nodes in <filename>/dev</filename>.
+                                All device nodes in <filename>/dev</filename>, but not /dev/shm (which is separately specified).
                                 Available since 0.6.6.
+                            </para></listitem></varlistentry>
+
+                            <varlistentry><term><option>shm</option></term>
+                            <listitem><para>
+                                Access to the host /dev/shm
+                                (<filename>/dev/shm</filename>).
+                                Available since 1.6.1.
                             </para></listitem></varlistentry>
 
                         </variablelist>
@@ -200,6 +210,14 @@
                             <listitem><para>
                                 The entire home directory.
                                 Available since 0.3.
+                            </para></listitem></varlistentry>
+
+                            <varlistentry><term><option>home/<replaceable>path</replaceable></option></term><listitem><para>
+                                  Alias for <filename>~/path</filename>
+                                  Available since 1.10.
+                                  For better compatibility with older
+                                  Flatpak versions, prefer to write this
+                                  as <filename>~/path</filename>.
                             </para></listitem></varlistentry>
 
                             <varlistentry><term><option>host</option></term>
@@ -224,6 +242,21 @@
                                 files in /sys available.
                             </para>
                             <para>
+                                Additionally, this keyword provides all of the
+                                same directories in
+                                <filename>/run/host</filename> as the
+                                <option>host-os</option> and
+                                <option>host-etc</option> keywords.
+                                If this keyword is used in conjunction
+                                with one of the <option>host-</option>
+                                keywords, whichever access level is higher
+                                (more permissive) will be used for the
+                                directories in <filename>/run/host</filename>:
+                                for example,
+                                <code>host:rw;host-os:ro;</code> is
+                                equivalent to <code>host:rw;</code>.
+                            </para>
+                            <para>
                                 These other reserved directories are
                                 currently excluded:
                                 <filename>/app</filename>,
@@ -243,6 +276,54 @@
                             </para>
                             <para>
                                 Available since 0.3.
+                            </para></listitem></varlistentry>
+
+                            <varlistentry><term><option>host-os</option></term>
+                            <listitem><para>
+                                The host operating system's libraries,
+                                executables and static data from
+                                <filename>/usr</filename>
+                                and the related directories
+                                <filename>/bin</filename>,
+                                <filename>/lib</filename>,
+                                <filename>/lib32</filename>,
+                                <filename>/lib64</filename>,
+                                <filename>/sbin</filename>.
+                                Additionally, this keyword provides access
+                                to a subset of <filename>/etc</filename> that
+                                is associated with packaged libraries and
+                                executables, even if the
+                                <option>host-etc</option> keyword
+                                was not used:
+                                <filename>/etc/ld.so.cache</filename>,
+                                (used by the dynamic linker) and
+                                <filename>/etc/alternatives</filename>
+                                (on operating systems that use it, such as
+                                Debian).
+                            </para>
+                            <para>
+                                To avoid conflicting with the Flatpak
+                                runtime, these are mounted in the sandbox
+                                at <filename>/run/host/usr</filename>,
+                                <filename>/run/host/etc/ld.so.cache</filename>
+                                and so on.
+                            </para>
+                            <para>
+                                Available since 1.7.
+                            </para></listitem></varlistentry>
+
+                            <varlistentry><term><option>host-etc</option></term>
+                            <listitem><para>
+                                The host operating system's configuration from
+                                <filename>/etc</filename>.
+                            </para>
+                            <para>
+                                To avoid conflicting with the Flatpak
+                                runtime, this is mounted in the sandbox
+                                at <filename>/run/host/etc</filename>.
+                            </para>
+                            <para>
+                                Available since 1.7.
                             </para></listitem></varlistentry>
 
                             <varlistentry><term><option>xdg-desktop</option>,
@@ -309,6 +390,15 @@
                             </term><listitem><para>
                                 An arbitrary path relative to the home
                                 directory. Available since 0.3.
+                            </para></listitem></varlistentry>
+
+                            <varlistentry><term><option>~</option></term>
+                            <listitem><para>
+                                  The same as <option>home</option>.
+                                  Available since 1.10.
+                                  For better compatibility with older
+                                  Flatpak versions, prefer to write this
+                                  as <option>home</option>.
                             </para></listitem></varlistentry>
 
                             <varlistentry><term>
@@ -395,6 +485,15 @@
                         are not allowed.
                     </para></listitem>
                 </varlistentry>
+                <varlistentry>
+                    <term><option>unset-environment</option> (list)</term>
+                    <listitem><para>
+                        A list of names of environment variables to unset.
+                        Note that environment variables to set to a value
+                        (possibly empty) appear in the [Environment]
+                        group instead.
+                    </para></listitem>
+                </varlistentry>
             </variablelist>
         </refsect2>
         <refsect2>
@@ -435,7 +534,7 @@
                 <varlistentry>
                     <term><option>app-commit</option> (string)</term>
                     <listitem><para>
-                        The commit ID or the application that is running.
+                        The commit ID of the application that is running.
                     </para></listitem>
                 </varlistentry>
                 <varlistentry>
@@ -478,7 +577,7 @@
                 <varlistentry>
                     <term><option>runtime-commit</option> (string)</term>
                     <listitem><para>
-                        The commit ID or the runtime that is used.
+                        The commit ID of the runtime that is used.
                     </para></listitem>
                 </varlistentry>
                 <varlistentry>
@@ -619,6 +718,12 @@
                 where <option>VAR</option> is the name of an environment variable
                 to set.
             </para>
+            <para>
+                Note that environment variables can also be unset (removed
+                from the environment) by listing them in the
+                <option>unset-environment</option> entry of the
+                [Context] group.
+              </para>
         </refsect2>
         <refsect2>
             <title>[Extension NAME]</title>

@@ -16,9 +16,10 @@ override_dh_clean:
 	rm -fr debian/XDG_RUNTIME_DIR
 
 override_dh_autoreconf:
+	NOCONFIGURE=1 \
 	dh_autoreconf \
 		--as-needed \
-		debian/autogen.sh \
+		./autogen.sh \
 		-- \
 		$(NULL)
 
@@ -41,14 +42,18 @@ endif
 override_dh_auto_configure:
 	rm -f app/parse-datetime.c
 	dh_auto_configure -- \
+		--disable-auto-sideloading \
+		--disable-selinux-module \
+		--enable-gdm-env-file \
 		--enable-installed-tests \
-		--libexecdir=/usr/libexec \
 		--with-dbus-config-dir=/usr/share/dbus-1/system.d \
 		--with-priv-mode=none \
 		--with-privileged-group=sudo \
+		--with-run-media-dir=/media \
 		--with-system-bubblewrap=bwrap \
 		--with-system-dbus-proxy=xdg-dbus-proxy \
 		--with-systemdsystemunitdir=/lib/systemd/system \
+		--with-system-helper-user=_flatpak \
 		$(configure_options)
 
 override_dh_install:

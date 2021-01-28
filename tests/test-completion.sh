@@ -22,6 +22,8 @@ set -euo pipefail
 #FLATPAK=flatpak
 . $(dirname $0)/libtest.sh
 
+skip_revokefs_without_fuse
+
 # This test looks for specific localized strings.
 export LC_ALL=C
 
@@ -34,7 +36,7 @@ ${FLATPAK} complete "flatpak a" 9 "a" | sort > complete_out
 (diff -u complete_out - || exit 1) <<EOF
 EOF
 
-echo "ok complete a commands"
+ok "complete a commands"
 
 ${FLATPAK} complete "flatpak b" 9 "b" | sort > complete_out
 (diff -u complete_out - || exit 1) <<EOF
@@ -49,7 +51,7 @@ build-sign
 build-update-repo 
 EOF
 
-echo "ok complete b commands"
+ok "complete b commands"
 
 ${FLATPAK} complete "flatpak i" 9 "i" | sort > complete_out
 (diff -u complete_out - || exit 1) <<EOF
@@ -57,7 +59,7 @@ info
 install 
 EOF
 
-echo "ok complete i commands"
+ok "complete i commands"
 
 ${FLATPAK} complete "flatpak --" 10 "--" | sort > complete_out
 (diff -u complete_out - || exit 1) <<EOF
@@ -67,6 +69,8 @@ ${FLATPAK} complete "flatpak --" 10 "--" | sort > complete_out
 --installation=
 --installations 
 --ostree-verbose 
+--print-system-only 
+--print-updated-env 
 --supported-arches 
 --system 
 --user 
@@ -74,7 +78,7 @@ ${FLATPAK} complete "flatpak --" 10 "--" | sort > complete_out
 --version 
 EOF
 
-echo "ok complete global options"
+ok "complete global options"
 
 ${FLATPAK} complete "flatpak list --" 15 "--" | sort > complete_out
 (diff -u complete_out - || exit 1) <<EOF
@@ -93,14 +97,14 @@ ${FLATPAK} complete "flatpak list --" 15 "--" | sort > complete_out
 --verbose 
 EOF
 
-echo "ok complete list options"
+ok "complete list options"
 
 ${FLATPAK} complete "flatpak create-usb /" 20 "/" | sort > complete_out
 #(diff -u complete_out - || echo "fail") <<EOF
 #__FLATPAK_DIR
 #EOF
 
-echo "ok complete create-usb"
+ok "complete create-usb"
 
 ${FLATPAK} complete "flatpak list --arch=" 20 "--arch=" | sort > complete_out
 (diff -u complete_out - || exit 1) <<EOF
@@ -110,7 +114,7 @@ i386
 x86_64 
 EOF
 
-echo "ok complete --arch"
+ok "complete --arch"
 
 ${FLATPAK} complete "flatpak override --allow=" 25 "--allow=" | sort > complete_out
 (diff -u complete_out - || exit 1) <<EOF
@@ -120,14 +124,14 @@ devel
 multiarch 
 EOF
 
-echo "ok complete --allow"
+ok "complete --allow"
 
 ${FLATPAK} complete "flatpak config --set l" 23 "l" > complete_out
 (diff -u complete_out - || exit 1) <<EOF
 languages
 EOF
 
-echo "ok complete config"
+ok "complete config"
 
 ${FLATPAK} complete "flatpak info o" 16 "o" | sort > complete_out
 (diff -u complete_out - || exit 1) <<EOF
@@ -136,14 +140,14 @@ org.test.Hello.Locale
 org.test.Platform 
 EOF
 
-echo "ok complete ref"
+ok "complete ref"
 
 ${FLATPAK} complete "flatpak permission-reset o" 26 "o" | sort > complete_out
 (diff -u complete_out - || exit 1) <<EOF
 org.test.Hello
 EOF
 
-echo "ok complete partial ref"
+ok "complete partial ref"
 
 for cmd in build-bundle build-commit-from build-export build-finish \
            build-import-bundle build-init build-sign build-update-repo \
@@ -157,9 +161,9 @@ for cmd in build-bundle build-commit-from build-export build-finish \
   assert_not_file_has_content complete_out "^--installation="
 done
 
-echo "ok complete NO_DIR commands"
+ok "complete NO_DIR commands"
 
-for cmd in history info list run update \
+for cmd in history info list run update mask \
            config install make-current override remote-add repair \
            create-usb remote-delete remote-info remote-list remote-ls \
            remote-modify search uninstall update; do
@@ -170,7 +174,7 @@ for cmd in history info list run update \
   assert_file_has_content complete_out "^--installation="
 done
 
-echo "ok complete non-NO_DIR commands"
+ok "complete non-NO_DIR commands"
 
 ${FLATPAK} complete "flatpak list --columns=" 24 "--columns=" | sort > complete_out
 (diff -u complete_out - || exit 1) <<EOF
@@ -183,26 +187,28 @@ description
 help
 installation
 latest
+name
 options
 origin
 ref
+runtime
 size
 version
 EOF
 
-echo "ok complete list --columns="
+ok "complete list --columns="
 
 ${FLATPAK} complete "flatpak list --columns=all" 27 "--columns=all" | sort > complete_out
 assert_file_empty complete-out
 
-echo "ok complete list --columns=all"
+ok "complete list --columns=all"
 
 ${FLATPAK} complete "flatpak list --columns=hel" 27 "--columns=hel" | sort > complete_out
 (diff -u complete_out - || exit 1) <<EOF
 help
 EOF
 
-echo "ok complete list --columns=hel"
+ok "complete list --columns=hel"
 
 ${FLATPAK} complete "flatpak list --columns=arch," 29 "--columns=arch," | sort > complete_out
 (diff -u complete_out - || exit 1) <<EOF
@@ -212,12 +218,14 @@ arch,branch
 arch,description
 arch,installation
 arch,latest
+arch,name
 arch,options
 arch,origin
 arch,ref
+arch,runtime
 arch,size
 arch,version
 EOF
 
-echo "ok complete list --columns=arch,"
+ok "complete list --columns=arch,"
 

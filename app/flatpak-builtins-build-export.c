@@ -49,7 +49,11 @@ static char *opt_files;
 static char *opt_metadata;
 static char *opt_timestamp = NULL;
 static char *opt_endoflife;
+static char *opt_endoflife_rebase;
+static char **opt_subsets;
 static char *opt_collection_id = NULL;
+static int opt_token_type = -1;
+static gboolean opt_no_summary_index = FALSE;
 
 static GOptionEntry options[] = {
   { "subject", 's', 0, G_OPTION_ARG_STRING, &opt_subject, N_("One line subject"), N_("SUBJECT") },
@@ -64,11 +68,15 @@ static GOptionEntry options[] = {
   { "exclude", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_exclude, N_("Files to exclude"), N_("PATTERN") },
   { "include", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_include, N_("Excluded files to include"), N_("PATTERN") },
   { "gpg-homedir", 0, 0, G_OPTION_ARG_STRING, &opt_gpg_homedir, N_("GPG Homedir to use when looking for keyrings"), N_("HOMEDIR") },
+  { "subset", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_subsets, "Add to a named subset", "SUBSET" },
   { "end-of-life", 0, 0, G_OPTION_ARG_STRING, &opt_endoflife, N_("Mark build as end-of-life"), N_("REASON") },
+  { "end-of-life-rebase", 0, 0, G_OPTION_ARG_STRING, &opt_endoflife_rebase, N_("Mark build as end-of-life, to be replaced with the given ID"), N_("ID") },
+  { "token-type", 0, 0, G_OPTION_ARG_INT, &opt_token_type, N_("Set type of token needed to install this commit"), N_("VAL") },
   { "timestamp", 0, 0, G_OPTION_ARG_STRING, &opt_timestamp, N_("Override the timestamp of the commit"), N_("TIMESTAMP") },
   { "collection-id", 0, 0, G_OPTION_ARG_STRING, &opt_collection_id, N_("Collection ID"), "COLLECTION-ID" },
   { "disable-fsync", 0, 0, G_OPTION_ARG_NONE, &opt_disable_fsync, "Do not invoke fsync()", NULL },
   { "disable-sandbox", 0, 0, G_OPTION_ARG_NONE, &opt_disable_sandbox, "Do not sandbox icon validator", NULL },
+  { "no-summary-index", 0, 0, G_OPTION_ARG_NONE, &opt_no_summary_index, N_("Don't generate a summary index"), NULL },
 
   { NULL }
 };
@@ -77,7 +85,6 @@ static gboolean
 metadata_get_arch (GFile *file, char **out_arch, GError **error)
 {
   g_autofree char *path = NULL;
-
   g_autoptr(GKeyFile) keyfile = NULL;
   g_autofree char *runtime = NULL;
   g_auto(GStrv) parts = NULL;
@@ -296,12 +303,13 @@ find_file_in_tree (GFile *base, const char *filename)
   return FALSE;
 }
 
-typedef gboolean (* VisitFileFunc) (GFile *file, GError **error);
+typedef gboolean (* VisitFileFunc) (GFile   *file,
+                                    GError **error);
 
 static gboolean
-visit_files_in_tree (GFile *base,
+visit_files_in_tree (GFile        *base,
                      VisitFileFunc visit_file,
-                     gpointer data)
+                     gpointer      data)
 {
   g_autoptr(GFileEnumerator) enumerator = NULL;
   GError **error = data;
@@ -383,7 +391,7 @@ validate_icon_file (GFile *file, GError **error)
 
   g_ptr_array_add (args, NULL);
 
-  if (!g_spawn_sync (NULL, (char **)args->pdata, NULL, 0, NULL, NULL, NULL, &err, &status, error))
+  if (!g_spawn_sync (NULL, (char **) args->pdata, NULL, 0, NULL, NULL, NULL, &err, &status, error))
     {
       g_debug ("Icon validation: %s", (*error)->message);
       return FALSE;
@@ -439,7 +447,6 @@ validate_desktop_file (GFile      *desktop_file,
                        GError    **error)
 {
   g_autofree char *path = g_file_get_path (desktop_file);
-
   g_autoptr(GSubprocess) subprocess = NULL;
   g_autofree char *stdout_buf = NULL;
   g_autofree char *stderr_buf = NULL;
@@ -544,7 +551,6 @@ validate_service_file (GFile      *service_file,
                        GError    **error)
 {
   g_autofree char *path = g_file_get_path (service_file);
-
   g_autoptr(GKeyFile) key_file = NULL;
   g_autofree char *name = NULL;
   g_autofree char *command = NULL;
@@ -600,10 +606,35 @@ validate_service_file (GFile      *service_file,
 }
 
 static gboolean
+get_subsets (char **subsets, GVariant **out)
+{
+  g_autoptr(GVariantBuilder) builder = g_variant_builder_new (G_VARIANT_TYPE ("as"));
+  gboolean found = FALSE;
+
+  if (subsets == NULL)
+    return FALSE;
+
+  for (int i = 0; subsets[i] != NULL; i++)
+    {
+      const char *subset = subsets[i];
+      if (*subset != 0)
+        {
+          found = TRUE;
+          g_variant_builder_add (builder, "s", subset);
+        }
+    }
+
+  if (!found)
+    return FALSE;
+
+  *out = g_variant_ref_sink (g_variant_builder_end (builder));
+  return TRUE;
+}
+
+static gboolean
 validate_exports (GFile *export, GFile *files, const char *app_id, GError **error)
 {
   g_autofree char *desktop_path = NULL;
-
   g_autoptr(GFile) desktop_file = NULL;
   g_autofree char *service_path = NULL;
   g_autoptr(GFile) service_file = NULL;
@@ -746,7 +777,6 @@ gboolean
 flatpak_builtin_build_export (int argc, char **argv, GCancellable *cancellable, GError **error)
 {
   gboolean ret = FALSE;
-
   g_autoptr(GOptionContext) context = NULL;
   g_autoptr(GFile) base = NULL;
   g_autoptr(GFile) files = NULL;
@@ -779,6 +809,7 @@ flatpak_builtin_build_export (int argc, char **argv, GCancellable *cancellable, 
   CommitData commit_data = {0};
   g_auto(GVariantDict) metadata_dict = FLATPAK_VARIANT_DICT_INITIALIZER;
   g_autoptr(GVariant) metadata_dict_v = NULL;
+  g_autoptr(GVariant) subsets_v = NULL;
   gboolean is_runtime = FALSE;
   gboolean is_extension = FALSE;
   guint64 installed_size = 0, download_size = 0;
@@ -818,7 +849,7 @@ flatpak_builtin_build_export (int argc, char **argv, GCancellable *cancellable, 
       goto out;
     }
 
-  if (!flatpak_is_valid_branch (branch, &my_error))
+  if (!flatpak_is_valid_branch (branch, -1, &my_error))
     {
       flatpak_fail (error, _("'%s' is not a valid branch name: %s"), branch, my_error->message);
       goto out;
@@ -907,14 +938,18 @@ flatpak_builtin_build_export (int argc, char **argv, GCancellable *cancellable, 
   if (g_file_query_exists (repofile, cancellable) &&
       !is_empty_directory (repofile, cancellable))
     {
+      const char *repo_collection_id;
+
       if (!ostree_repo_open (repo, cancellable, error))
         goto out;
 
-      if (!ostree_repo_resolve_rev (repo, full_branch, TRUE, &parent, error))
+      repo_collection_id = ostree_repo_get_collection_id (repo);
+      if (!flatpak_repo_resolve_rev (repo, repo_collection_id, NULL, full_branch, TRUE,
+                                     &parent, cancellable, error))
         goto out;
 
       if (opt_collection_id != NULL &&
-          g_strcmp0 (ostree_repo_get_collection_id (repo), opt_collection_id) != 0)
+          g_strcmp0 (repo_collection_id, opt_collection_id) != 0)
         {
           flatpak_fail (error, "Specified collection ID ‘%s’ doesn’t match collection ID in repository configuration ‘%s’.",
                         opt_collection_id, ostree_repo_get_collection_id (repo));
@@ -942,14 +977,14 @@ flatpak_builtin_build_export (int argc, char **argv, GCancellable *cancellable, 
     goto out;
 
   /* This is useful only if the target is a "bare" rep, but this happens
-     in flatpak-builder when commiting to the cache repo. For other repos
+     in flatpak-builder when committing to the cache repo. For other repos
      this is a no-op */
   if (!ostree_repo_scan_hardlinks (repo, cancellable, error))
     goto out;
 
   mtree = ostree_mutable_tree_new ();
 
-  if (!flatpak_mtree_create_root (repo, mtree, cancellable, error))
+  if (!flatpak_mtree_ensure_dir_metadata (repo, mtree, cancellable, error))
     goto out;
 
   if (!ostree_mutable_tree_ensure_dir (mtree, "files", &files_mtree, error))
@@ -1017,6 +1052,26 @@ flatpak_builtin_build_export (int argc, char **argv, GCancellable *cancellable, 
     g_variant_dict_insert_value (&metadata_dict, OSTREE_COMMIT_META_KEY_ENDOFLIFE,
                                  g_variant_new_string (opt_endoflife));
 
+  if (opt_endoflife_rebase && *opt_endoflife_rebase)
+    {
+      g_auto(GStrv) full_ref_parts = g_strsplit (full_branch, "/", 0);
+      g_autofree char *rebased_ref = g_build_filename (full_ref_parts[0], opt_endoflife_rebase, full_ref_parts[2], full_ref_parts[3], NULL);
+
+      if (!flatpak_is_valid_name (opt_endoflife_rebase, -1, error))
+        return glnx_prefix_error (error, "Invalid name in --end-of-life-rebase");
+
+      g_variant_dict_insert_value (&metadata_dict, OSTREE_COMMIT_META_KEY_ENDOFLIFE_REBASE,
+                                   g_variant_new_string (rebased_ref));
+    }
+
+  if (opt_token_type >= 0)
+    g_variant_dict_insert_value (&metadata_dict, "xa.token-type",
+                                 g_variant_new_int32 (GINT32_TO_LE (opt_token_type)));
+
+  /* Skip "" subsets as they mean everything, so no  */
+  if (get_subsets (opt_subsets, &subsets_v))
+    g_variant_dict_insert_value (&metadata_dict, "xa.subsets", subsets_v);
+
   metadata_dict_v = g_variant_ref_sink (g_variant_dict_end (&metadata_dict));
 
   /* The timestamp is used for the commit metadata and AppStream data */
@@ -1079,13 +1134,21 @@ flatpak_builtin_build_export (int argc, char **argv, GCancellable *cancellable, 
                                         (opt_timestamp != NULL) ? ts.tv_sec : 0, cancellable, error))
     return FALSE;
 
-  if (!opt_no_update_summary &&
-      !flatpak_repo_update (repo,
-                            (const char **) opt_gpg_key_ids,
-                            opt_gpg_homedir,
-                            cancellable,
-                            error))
-    goto out;
+  if (!opt_no_update_summary)
+    {
+      FlatpakRepoUpdateFlags flags = FLATPAK_REPO_UPDATE_FLAG_NONE;
+
+      if (opt_no_summary_index)
+        flags |= FLATPAK_REPO_UPDATE_FLAG_DISABLE_INDEX;
+
+      g_debug ("Updating summary");
+      if (!flatpak_repo_update (repo, flags,
+                                (const char **) opt_gpg_key_ids,
+                                opt_gpg_homedir,
+                                cancellable,
+                                error))
+        goto out;
+    }
 
   format_size = g_format_size (stats.content_bytes_written);
 

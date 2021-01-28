@@ -13,7 +13,7 @@
 /* Define if using seccomp */
 #undef ENABLE_SECCOMP
 
-/* Define if we should be compatible with wrpseudo */
+/* Define if we should be compatible with pseudo */
 #undef ENABLE_WRPSEUDO_COMPAT
 
 /* Define if using xauth */
@@ -24,6 +24,9 @@
 
 /* gettext domain */
 #undef GETTEXT_PACKAGE
+
+/* Ignore massive GTimeVal deprecation warnings in 2.62 */
+#undef GLIB_VERSION_MIN_REQUIRED
 
 /* Define to 1 if you have the `archive_read_support_filter_all' function. */
 #undef HAVE_ARCHIVE_READ_SUPPORT_FILTER_ALL
@@ -70,6 +73,9 @@
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
 
+/* Define if libmalcontent is available */
+#undef HAVE_LIBMALCONTENT
+
 /* Define if libsystemd is available */
 #undef HAVE_LIBSYSTEMD
 
@@ -96,6 +102,9 @@
 
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
+
+/* Define if libzstd is available */
+#undef HAVE_ZSTD
 
 /* Define to the sub-directory where libtool stores uninstalled libraries. */
 #undef LT_OBJDIR

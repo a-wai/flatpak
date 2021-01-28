@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
-    "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
+    "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 
 <refentry id="flatpak-update">
 
@@ -51,7 +51,7 @@
             is updated, as well as appstream info for all remotes.
         </para>
         <para>
-            Each <arg choice="plain">REF</arg> argument is a full or partial indentifier in the
+            Each <arg choice="plain">REF</arg> argument is a full or partial identifier in the
             flatpak ref format, which looks like "(app|runtime)/ID/ARCH/BRANCH". All elements
             except ID are optional and can be left out, including the slashes,
             so most of the time you need only specify ID. Any part left out will be matched
@@ -66,7 +66,7 @@
         <para>
             Normally, this command updates the application to the tip
             of its branch. But it is possible to check out another commit,
-            with the --commit option.
+            with the <option>--commit</option> option.
         </para>
         <para>
             If the configured remote for a ref being updated has a collection ID configured on it,
@@ -135,7 +135,8 @@
                 <term><option>--arch=ARCH</option></term>
 
                 <listitem><para>
-                    The architecture to update for.
+                    The architecture to update for. See <command>flatpak --supported-arches</command>
+                    for architectures supported by the host.
                 </para></listitem>
             </varlistentry>
 
@@ -215,6 +216,17 @@
             </varlistentry>
 
             <varlistentry>
+                <term><option>--sideload-repo=PATH</option></term>
+
+                <listitem><para>
+                  Adds an extra local ostree repo as source for installation. This is equivalent
+                  to using the sideload-repos directories (see flatpak(1)), but can be done on a
+                  per-command basis. Any path added here is used in addition to ones in those
+                  directories.
+                </para></listitem>
+            </varlistentry>
+
+            <varlistentry>
                 <term><option>-y</option></term>
                 <term><option>--assumeyes</option></term>
                 <listitem><para>
@@ -260,7 +272,7 @@
         <title>Examples</title>
 
         <para>
-            <command>$ flatpak --user update org.gnome.GEdit</command>
+            <command>$ flatpak --user update org.gnome.gedit</command>
         </para>
 
     </refsect1>

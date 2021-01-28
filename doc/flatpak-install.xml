@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
-    "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
+    "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 
 <refentry id="flatpak-install">
 
@@ -55,7 +55,7 @@
           and the user is asked to confirm the resulting choice.
         </para>
         <para>
-          Each <arg choice="plain">REF</arg> argument is a full or partial indentifier in the
+          Each <arg choice="plain">REF</arg> argument is a full or partial identifier in the
           flatpak ref format, which looks like "(app|runtime)/ID/ARCH/BRANCH".
           All elements except ID are optional and can be left out, including the slashes,
           so most of the time you need only specify ID. Any part left out will be matched
@@ -178,7 +178,9 @@
                 <term><option>--arch=ARCH</option></term>
 
                 <listitem><para>
-                    The default architecture to install for, if not given explicitly in the <arg choice="plain">REF</arg>.
+                    The default architecture to install for, if not given explicitly in
+                    the <arg choice="plain">REF</arg>. See <command>flatpak --supported-arches</command>
+                    for architectures supported by the host.
                 </para></listitem>
             </varlistentry>
 
@@ -233,6 +235,14 @@
             </varlistentry>
 
             <varlistentry>
+                <term><option>--or-update</option></term>
+                <listitem><para>
+                  Normally install just ignores things that are already installed (printing a warning), but if
+                  --or-update is specified it silently turns it into an update operation instead.
+                </para></listitem>
+            </varlistentry>
+
+            <varlistentry>
                 <term><option>--app</option></term>
 
                 <listitem><para>
@@ -244,6 +254,17 @@
                 <term><option>--runtime</option></term>
                 <listitem><para>
                     Assume that all <arg choice="plain">REF</arg>s are runtimes if not explicitly specified.
+                </para></listitem>
+            </varlistentry>
+ 
+            <varlistentry>
+                <term><option>--sideload-repo=PATH</option></term>
+
+                <listitem><para>
+                  Adds an extra local ostree repo as source for installation. This is equivalent
+                  to using the sideload-repos directories (see flatpak(1)), but can be done on a
+                  per-command basis. Any path added here is used in addition to ones in those
+                  directories.
                 </para></listitem>
             </varlistentry>
 
@@ -286,16 +307,22 @@
         <title>Examples</title>
 
         <para>
-            <command>$ flatpak install gnome org.gnome.gedit2</command>
+            <command>$ flatpak install gedit</command>
         </para>
         <para>
-            <command>$ flatpak --installation=default install gnome org.gnome.gedit2</command>
+            <command>$ flatpak install flathub org.gnome.gedit</command>
         </para>
         <para>
-            <command>$ flatpak --user install gnome org.gnome.gedit//3.22</command>
+            <command>$ flatpak --installation=default install flathub org.gnome.gedit</command>
         </para>
         <para>
-            <command>$ flatpak --user install https://sdk.gnome.org/gedit.flatpakref</command>
+            <command>$ flatpak --user install flathub org.gnome.gedit//3.30</command>
+        </para>
+        <para>
+            <command>$ flatpak --user install https://flathub.org/repo/appstream/org.gnome.gedit.flatpakref</command>
+        </para>
+        <para>
+            <command>$ flatpak --system install org.gnome.gedit.flatpakref</command>
         </para>
 
     </refsect1>

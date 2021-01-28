@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
-    "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
+    "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 
 <refentry id="flatpak-uninstall">
 
@@ -44,7 +44,7 @@
             application or runtime to uninstall.
         </para>
         <para>
-            Each <arg choice="plain">REF</arg> argument is a full or partial indentifier in the
+            Each <arg choice="plain">REF</arg> argument is a full or partial identifier in the
             flatpak ref format, which looks like "(app|runtime)/ID/ARCH/BRANCH". All elements
             except ID are optional and can be left out, including the slashes,
             so most of the time you need only specify ID. Any part left out will be matched
@@ -137,7 +137,8 @@
 
                 <listitem><para>
                     The architecture to uninstall, instead of the architecture of
-                    the host system.
+                    the host system. See <command>flatpak --supported-arches</command>
+                    for architectures supported by the host.
                 </para></listitem>
             </varlistentry>
 
@@ -233,7 +234,7 @@
         <title>Examples</title>
 
         <para>
-            <command>$ flatpak --user uninstall org.gnome.GEdit</command>
+            <command>$ flatpak --user uninstall org.gnome.gedit</command>
         </para>
 
     </refsect1>

@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
-    "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
+    "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 
 <refentry id="flatpak-build-export">
 
@@ -124,10 +124,22 @@
             </varlistentry>
 
             <varlistentry>
+                <term><option>--subset=SUBSET</option></term>
+
+                <listitem><para>
+                    Mark the commit to be included in the named subset. This will cause the commit
+                    to be put in the named subset summary (in addition to the main one), allowing
+                    users to see only this subset instead of the whole repo.
+                </para></listitem>
+            </varlistentry>
+
+            <varlistentry>
                 <term><option>--arch=ARCH</option></term>
 
                 <listitem><para>
-                    Specify the architecture component of the branch to export. Only host compatible architectures can be specified.
+                    Specify the architecture component of the branch to export. Only
+                    host compatible architectures can be specified; see
+                    <command>flatpak --supported-arches</command> for valid values.
                 </para></listitem>
             </varlistentry>
 
@@ -144,7 +156,7 @@
                 <term><option>--include=PATTERN</option></term>
 
                 <listitem><para>
-                    Don't exclude files matching <arg choice="plain">PATTERN</arg> from the commit, even if they match the <option>--export</option> patterns.
+                    Don't exclude files matching <arg choice="plain">PATTERN</arg> from the commit, even if they match the <option>--exclude</option> patterns.
                     This option can be used multiple times.
                 </para></listitem>
             </varlistentry>
@@ -183,6 +195,16 @@
                 <listitem><para>
                     Mark the build as end-of-life. REASON is a message that may be shown to users
                     installing this build.
+                </para></listitem>
+            </varlistentry>
+
+            <varlistentry>
+                <term><option>--end-of-life-rebase=ID</option></term>
+
+                <listitem><para>
+                    Mark the build as end-of-life. Unlike <option>--end-of-life</option>,
+                    this one takes an ID that supersedes the current one. By the user's
+                    request, the application data may be preserved for the new application.
                 </para></listitem>
             </varlistentry>
 
@@ -236,7 +258,7 @@
                 <term><option>--runtime</option></term>
 
                 <listitem><para>
-                    Export a runtime instead for an app (this uses the usr subdir as files).
+                    Export a runtime instead of an app (this uses the usr subdir as files).
                 </para></listitem>
             </varlistentry>
 

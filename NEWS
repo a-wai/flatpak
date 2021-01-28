@@ -1,34 +1,583 @@
-Changes in 1.2.5
+Changes in 1.10.1
+~~~~~~~~~~~~~~~~~
+Released: 2020-01-21
+
+ * Fix flatpak build on systems with setuid bwrap
+ * Fix some compiler warnings
+ * Add --enable-asan configure option
+ * Fix crash on updating apps with no deploy data
+ * Update translations
+
+Changes in 1.10.0
+~~~~~~~~~~~~~~~~~
+Released: 2020-01-14
+
+This is the first stable release after the 1.9.x unstable series.
+The major new feature in this series compared to 1.8 is the support
+for the new repo format which should make updates faster and download
+less data.
+
+This release also contains the security fixes from 1.8.5, so everyone
+on the 1.9.x series should update immediately. (CVE-2021-21261)
+
+Other changes since 1.9.3:
+
+ * The systemd generator snippets now call flatpak --print-updated-env
+   in place of a bunch of shell for better login performance.
+ * The .profile snippets now disable GVfs when calling flatpak to
+   avoid spawning a gvfs daemon when logging in via ssh.
+ * Build fixes for GCC 11.
+ * Flatpak now finds the pulseaudio sockets better in uncommon
+   configurations.
+ * Sandboxes with network access it now also has access to the
+   systemd-resolved socket to do dns lookups.
+ * Flatpak supports unsetting env vars in the sandbox using --unset-env,
+   and `--env=FOO=` now sets FOO to the empty string instead of
+   unsetting it.
+ * Similarly the spawn portal has an option to unset an env var.
+ * The spawn portal now has an option to share the pid namespace
+   with the sub-sandbox.
+
+Changes in 1.9.3
+~~~~~~~~~~~~~~~~
+Released: 2020-12-22
+
+I expect this to be the final 1.9.x release, and we can expect 1.10.0
+early next year, containing basically whats in this release in terms
+of features.
+
+A minor change in the new indexed summary format in this release. The
+gpg signature of the summary index is now stored in a filename indexed
+by the checksum of the index rather than a static filename. This fixes
+an update race between clients accessing the two files during and update.
+It also helps in keeping mirrors and cached coherent. The old filename
+is still created/used for backwards compat with 1.9.1, but may go
+away in the future.
+
+Other changes:
+
+ * --filesystem=host now exposed /var/usrlocal (as seen on ostree)
+ * Better error messages in flatpak portal.
+ * Rebases during update now install the new app before uninstalling
+   the old, which means failure during the first doesn't leave the app
+   uninstalled.
+ * flatpak_installation_list_installed_refs_for_update() now handles
+   some case better when apps in the user installation depends on
+   runtimes in the system installation.
+ * New version of the deploy files which guarantees the existance of
+   a bit more data. This is useful for eol detection of apps that were
+   installed with previous flatpak versions.
+ * Some corner cases when installing an app with extra-data into a nonstandard
+   installation were fixed.
+ * Fixed crashed when killing and entering running instance that have
+   was running a runtime, not an app.
+ * The root user can now bypass parental controls.
+ * Some fixes to library annotations.
+ * Updated translations
+
+Changes in 1.9.2
+~~~~~~~~~~~~~~~~
+Released: 2020-11-20
+
+ * Some build fixes on non-x86-64 arches
+ * Fix permission issue in endless installer
+ * Fixed a bug where flatpak was accidentally clearing the summary cache
+   during updates in the user installation.
+ * Fix handling of the multiarch permission.,
+ * Add back the commit timestamp to the summary file.
+
+Changes in 1.9.1
+~~~~~~~~~~~~~~~~
+Released: 2020-11-19
+
+This is the first unstable release in the series that will lead to
+1.10. The main change in this version is a new format for the summary
+file used when accessing an OSTree repository on the network. For this
+reason we now require OSTree version 2020.8.
+
+The new format should make getting the initial metadata required for
+most flatpak operations much faster, and use less network
+bandwidth. This will allow repositories to scale to more apps and more
+architectures without affecting clients. The old format is still
+generated for compatibility with older clients.
+
+The new format also allows repositories to publish named subsets, and
+for clients to declare that they only want to see that subset. The
+goal here is to allow for example flathub to mark all FOSS apps, and
+make it possible for users to use a flathub-foss remote without
+flathub having to maintain two duplicated repositories. This is
+accessible by passing --subset=SUBSET to the build-commit-from and
+build-export commands.
+
+The new repo option `flatpak.summary-arches` controls which architectures
+are put in the old format summary. This can be used to avoid newly added
+architectures making old clients slower, at the cost of requiring a newer
+flatpak client version for the new architecture.
+
+Other major changes
+ * There is a new `flatpak pin` command that lets you pin runtimes
+   so that they are not considered unused. Also, we now by default pin
+   runtimes that are installed explicitly (i.e. not as a dependency of an
+   app).
+ * During a regular update or uninstall of an app, if the operation
+   makes a previously used runtime unused, and the runtime is marked
+   as end-of-lifed, then the runtime is automatically uninstalled.
+ * During `flatpak update` (i.e. with no specific app given) flatpak
+   now automatically adds uninstall operations for end-of-life runtimes
+   that are unused.
+ * The end-of-life warnings in the flatpak CLI are now better, showing
+   more useful details (like version and what apps are using the runtime)
+   and less unuseful details.
+ * Some changes was made in which dconf paths were considered "similar"
+   to the app id, allowing for example `org.gnome.SoundJuicer` to
+   migrate from `/org/gnome/sound-juicer`.
+ * Flatpak run now implements the new standard for os-release in containers
+   (https://www.freedesktop.org/software/systemd/man/os-release.html).
+ * There is now a tcsh profile snippet
+ * The origin remote for an app is now prioritized over other remotes with
+   the same priority when looking for dependencies.
+ * We now allow extra-data apply_extra processes to run multiarch code.
+ * A new internal representation for ostree ref strings was added which
+   is more efficient. This should not affect the behaviour of flatpak
+   but the large amounts of changes to use this may have accidentally
+   introduced regressions.
+ * Some fixes to the in-memory summary cache make it more efficient.
+ * --filesystem=/ is now explicitly forbidden as it doesn't work (and never
+   did).
+ * Flatpak install/update now only prints `(partial)` for an update that
+   actually is partial (not just for all locales).
+ * Flatpak remote-ls on a file: uri (for example a sideloaded repo) now
+   correctly lists the refs in the repo.
+ * New library APIS: flatpak_installation_list_pinned_refs,
+   flatpak_transaction_set_disable_auto_pin,
+   flatpak_transaction_set_include_unused_uninstall_ops,
+   flatpak_transaction_operation_get_subpaths,
+   flatpak_transaction_operation_get_requires_authentication.
+ * flatpak_installation_list_installed_refs_for_update() now returns
+   refs that have a end-of-life rebase that it could be updated to.
+ * There is a new `ready-pre-auth` signal in FlatpakTransaction allowing
+   clients new ways to handling authentication.
+ * Fix bug where extension sources were sometimes auto-installed
+
+Changes in 1.8.3
+~~~~~~~~~~~~~~~~
+Released: 2020-11-17
+
+  * Fixed progress reporting for OCI and extra-data
+  * The in-memory summary cache is more efficient
+  * Fixed authentication getting stuck in a loop in some cases
+  * Fixed authentication error reporting
+  * We now extract OCI info for runtimes as well as apps
+  * Fixed crash if anonymous authentication fails and -y is specified
+  * flatpak info now only looks at the specified installation
+    if one is specified
+  * Better error reporting for server HTTP errors during download
+  * Uninstall now removes applications before the runtime it depends on
+  * Fixed test-suite to pass with the latest OSTree version
+  * Fixed dbus environment variables in flatpak enter
+  * Avoid updating metadata from the remote when uninstalling
+  * Fixed error message handling in various places
+  * FlatpakTransaction now verifies all passed in refs to avoid
+    potential issues with invalid names
+  * Updated translations
+
+Changes in 1.8.2
 ================
 
-This release to the 1.2 old stable series matches some new features
-that were added in 1.4.3 stable release. These are backported because
-these features are in use on flathub at the moment.
+ * Added validation of collection id settins for remotes
+ * Fix seccomp filters on s390
+ * Robustness fixes to the spawn portal
+ * Fix support for masking update in the system installation
+ * Better support for distros with uncommon models of merged /usr
+ * Cache responses from localed/AccoutService
+ * Fix hangs in cases where xdg-dbus-proxy fails to start
+ * Fix double-free in cups socket detection
+ * OCI authenticator now doesn't ask for auth in case of http errors
 
-The main feature is the support for allowing the use of extra_data
-for runtimes (as opposed to only for apps) which is used by the new
-org.freedesktop.Platform.openh264 extension.
+Changes in 1.8.1
+================
 
-Supporting this, flatpak now supports specifying several flatpak
-versions to require, rather than just a single one. This is used by
-the above extension in order to express that it needs flatpak 1.2.5 or
-1.4.2 (but not e.g. 1.4.1).
+ * Avoid calling authenticator in update if ref didn't change
+ * Don't fail transaction if ref is already installed (after transaction start)
+ * Fix flatpak run handling of userns in the --device=all case
+ * Fix handling of extensions from different remotes
+ * Fix flatpak run --no-session-bus
+ * Updated translations
 
-Only the client side features for this are backported. To build such
-extensions you need to use a newer flatpak.
+Changes in 1.8.0
+================
+
+New stable release series 1.8.
+
+Changes:
+ * FlatpakTransaction has a new signal "install-authenticator" which clients can handle to
+   install authenticators needed for the transaction. This is done in the CLI commands.
+ * We now always expose the host timezone data, allowing us the expose the host /etc/localtime
+   in a way that works better, fixing several apps that had timezone issues.
+ * Fix flatpak enter which didn't work in some cases.
+ * We now ship a systemd unit (not installed by default) to automatically detect plugged in
+   usb sticks with sideload repos.
+ * By default we no longer install the gdm env.d file, as the systemd generators work better
+ * create-usb now exports partial commits by default
+ * Fix handling of docker media types in oci remotes
+ * Fix subjects in remote-info --log output
+
+Changes in 1.7.3
+================
+
+ * Allow direct ALSA device access if app has pulseaudio access.
+ * Flatpak now ships a sysusers.d file for allowing systemd to create the required users.
+ * Fix issue in remote-delete where it failed to delete system remotes if it had to uninstall
+   something first.
+ * New library calls flatpak_transaction_operation_get_related_to_ops(), flatpak_transaction_operation_get_is_skipped() and
+   flatpak_transaction_set_no_interaction().
+ * New options --[no-]follow-redirect in remote-add/modify
+ * New spawn portal APIs to get real pid of launched app.
+ * By default, all OCI remotes now use the flatpak-oci-authenticator.
+ * Support flatpak remote-info and flatpak update --commit= to specific versions for OCI remotes.
+ * Initial work in progress on using deltas for OCI remotes.
+ * Fix race in the generation of ld.so.cache when starting copies of the same app at the same time.
+ * Minor fix in what locales are installed on update.
+ * Flatpak uninstall now doesn't fail if one ref (of many) was not installed.
+ * Flatpak systemd transient units now have an app-prefix to match new XDG spec for
+   cgroup names.
+ * In some cases we previously downloaded the summary twice.
+ * flatpak upgrade is now an alias for flatpak update.
+ * Fix to selinux module to work without unconfined module.
+ * Respect user XDG basedirs when finding users fonts and icons.
+ * Fix issue where thread were sometimes initialized causing flatpak enter to fail.
+ * Better error reporting when authentication goes wrong.
+
+Changes in 1.7.2
+================
+
+This fixes some regressions in progress reporting in 1.7.1, where it would report > 100%.
+
+Other changes:
+ * Completion support for fish shell
+ * Properly handle migration of remotes with collection ids
+ * The summary now has some extra-data download size info which can make downloads slightly more efficient
+
+Changes in 1.7.1
+================
+
+This is the first release in the 1.7.x unstable release series.
+
+A major change is that the support for the ostree peer-to-peer installation has been
+simplified. Flatpak no longer supports installing from local network peers, and sideloading
+from local usb stick is no longer automatic. To enable sideloading you have to configure
+a sideload repository by creating a symlink to it from /var/lib/flatpak/sideload-repos or
+/run/flatpak/sideload-repos. Due to this the flatpak code has been simplified internally
+and the p2p support is more efficient.
+
+Other major changes
+ * If an app has filesystem access, the host /lib is accessible as /run/host/lib, etc.
+ * New filesystem permission "host-etc" and "host-os" give access to system /usr and /etc.
+ * Flatpak now uses variant-schema-compiler to generate more efficient code for
+   parsing GVariant files from ostreee.
+ * libsystemd use is now optional in configure.
+ * Journal sockets are mounted readonly
+ * document-export now supports exporting directories (requires new portal version)
+ * DConf migration now allows version numbers in object paths
+
+Changes in 1.6.3
+================
+
+The main change in this version is a fix for a regression in the progress calculation
+for applications using extra-data. Additionally the bundled version of bubblewrap
+is updated to 0.4.1 which fixes a security issue in some cases. See
+  https://github.com/containers/bubblewrap/security/advisories/GHSA-j2qp-rvxj-43vj
+for details.
+
+Other changes:
+ * Updated translations
+ * Don't break if users primary gid is not in the nsswitch database
+ * Fix crash in flatpak repair if no remotes are configured
+ * Some updates to the oci authenticator
+ * Retry downloads of extra data
+
+Changes in 1.6.2
+================
+
+Due to a combination of some behaviour in flatpak and recent versions of ostree we at some
+point lost the use of deltas for the initial install case, instead always falling back
+to a full ostree operation which is a lot less efficient for pulls with many small files
+like a runtime. This caused some very slow installs from e.g. flathub, so I recommend
+everyone update to this version to get better install performance.
 
 Other changes are:
- * Various fixes for OCI repos
- * Some crashers fixes
- * Set looser permissions on the /run/host/monitor directory to
-   work with e.g. toolbox on the host.
- * Fix installation of bundles.
- * Handle 'versions' extension key (in addition to 'version') when
-   checking for installed extensions. Thg lack of this was causing
-   flatpak to incorrectly consider some extensions not in use,
-   thus removing them in 'uninstall --unused'.
+ * We now correctly handle TMPDIR env var overrides when bwrap is setuid
+ * Disallow running "flatpak run" under sudo (as it doesn't work and causes issues)
+ * Fix build with older versions of glib
+ * Minor documentation updates
+ * Updated translations
 
-Changes in 1.2.4
+Changes in 1.6.1
+================
+
+This is a (mild) security update. Flatpak 1.6.0 added the ability for an application to request it to be
+updated, as long as the new version doesn't require new permissions. Unfortunately in some special cases,
+if an app had acces to the home directory, but not the rest of the filesystem it would still allow a
+self-update where the new version could access some files outside the home directory..
+
+This is fixed in this version, and all users of 1.6.0 are recommended to update.
+
+Other changes are:
+
+ * New permission --device=shm giving access to host /dev/shm, as needed for jack.
+ * Generated correct download size in build-commit-from
+ * sub-sandbox now allows the child to share the gpu of the caller has full device access
+ * Fix crash with disabled remotes
+ * Fix builds with older versions of glib
+ * Update translations
+
+Changes in 1.6.0
+================
+
+This is the first stable release in the 1.6 series, main changes
+since 1.4 is the support for protected content and improvements
+in the self-sandboxing support.
+
+There is one change in the support for OCI remotes, we now
+only support the use of labels, not annotations, as labels
+work with more registries. This means pre-existing OCI flatpak
+registries (like fedora) may need some changes.
+
+Changes since 1.5.2:
+ * New permissions --socket=cups for direct cups access
+ * Fix some leaks
+ * Fix reporting of progress with latest version of ostree
+ * New no-interaction flag for authenticators
+ * Support for auto-installing authenticators from a flatpak remote
+ * Warn less about unset XDG_DATA_DIRS
+ * Don't poll for updates in the portal when on a metered connection
+
+Changes in 1.5.2
+================
+
+This version has further changes to the protocol and API for handing
+authentication, in order to make it more flexible and futureproof. The
+sample authenticator has been updated to the new APIs. Flatpak now
+ships with a OCI authenticator that can be used to access private OCI
+registries.
+
+FlatpakTransaction now also has a callback for simple user/password
+authentication for an authenticator (the basic-auth-start signal)
+modeled on HTTP basic authentication. This is handled in the flatpak
+CLI by interactive prompts on the terminal. This is needed by the OCI
+authenticator, but can also be used by other authenticators that have
+simple authentication requirements.
+
+There were also some fixes to the new self-sandboxing support of the
+flatpak spawn portal, allowing webkit to use it.
+
+Other changes:
+ * Show background status in flatpak ps
+ * Improved docs and help output
+ * Fix support for fd forwarding and the allow_a11y flag in the sandboxing portal
+ * Some improvements to the new permission-set command
+ * New remote option that allows settting the default token type (mostly for debugging)
+
+
+
+Changes in 1.5.1
+================
+
+The major new feature of this is the support for protected applications and the system
+around authenticting downloads to it. This is not considered stable yet, but this release
+has the initial work to make it possible for developers to play around with this. I
+will send out a separate mail about this later.
+
+Other changes:
+ * Flatpak now bundles bubblewrap 0.4.0, and requires 0.4.0 to use the system bubblewrap.
+ * Optional support for parental controls using libmalcontent.
+ * Transaction now installs extensions before apps to ensure we have a working app immediately after install.
+ * Changes in temporary file use makes flatpak run work better in low disk space situations.
+ * flatpak enter now works without sudo, and works better in general.
+ * New features for the flatpak portal:
+   * Support starting a sub-sandbox with the child processes visible in the original sandbox.
+   * Support adding some kinds of permissions to sub-sandboxes
+ * New commands flatpak permission-set and permission-remove
+ * flatpak install CLI now always shows what kind of operations everything is.
+ * libflatpak now returns apps as updatable if doing so would auto-download missing extensions or runtimes.
+ * new API: flatpak_transaction_get_no_(deploy|pull).
+ * We can now store locale info in the extra-languages key (in addition to the country code).
+ * remote-ls and list --app-runtime now only shows apps, no runtimes.
+ * Stop using mirror refs and delete any useless mirror refs you might have in your repo.
+ * Fix busy-loop regression in revokefs-fuse in 1.5.0
+
+Changes in 1.5.0
+================
+
+ * New options flatpak install --or-update operation.
+ * New command flatpak mask allows pinning version and avoiding auto-downloads.
+ * Support self-updates and update monitoring in the flatpak portal.
+ * Fix updates of exported services with dbus-broken.
+ * Don't show arch columns in terminal outout if all are the same.
+ * Fix some cases where origin remotes were not properly removed.
+ * flatpak-session-helper now links to more libraries.
+ * OCI: Support images tagged with labels as well as annotations.
+ * OCI: Alway generate a history for images.
+ * OCI: Support docker mimetypes in addition to OCI mimetypes.
+ * Uninstall now always work, even if the remote it came from was force removed.
+ * New config key default-languages that allows additions to the system list
+  instead of overriding it.
+ * Various minor tweak to CLI behaviour and output.
+
+Changes in 1.4.3
+================
+ * Fix crash in revokefs.
+ * Handle 'versions' extension key (in addition to 'version') when
+   checking for local extensions, which was causing us to uninstall
+   some actually used extensions with uninstall --unused.
+ * The 'required-flatpak' metadata key now supports listing multiple
+   versions to support backported features.
+ * Fix crash with older versions of polkit.
+ * Fix installation of bundles.
+ * Fix crash on deploy error.
+ * Support building bundles of apps installed from a remote.
+ * OCI: Fix handling of locally cached icons.
+ * Fix crash when listing unconfigured remotes.
+ * Ignore differences in trailing slashes for repo uris.
+
+Changes in 1.4.2
+================
+
+ * Support extra_data in extensions.
+ * Handle double slashes ("//")in XDG_DATA_DIRS.
+ * Fix detection of local related refs.
+
+Changes in 1.4.1
+================
+
+*WARNING* *WARNING* *WARNING*
+
+There was an accidental ABI break in libflatpak in 1.4.0 compared to
+the 1.2.x ABI which caused crashes in apps like gnome-software.
+
+This has been fixed in this release so it is now ABI compatible with
+1.2.x, but *NOT* compatible with 1.4.0. It is recommended that all
+distributions that shipped 1.4.0 update to 1.4.1 and rebuild all
+dependencies of libflatpak.
+
+ * Make ABI compatible with 1.2.x
+ * Update translations
+ * Fix some potential crashes
+ * Fix some corner case where it was impossible to remove a remote
+ * Restore support for file: uris in the RuntimeRepo key in flatpakref files
+
+Changes in 1.4.0
+================
+
+This is the new stable series, ending the 1.3.x series. The major changes
+since the 1.2.x is the improved I/O use for system-installed applications,
+and the new format for pre-configured remotes.
+
+ * Recalculate download-size when moving between repos in
+   build-commit-from.
+ * New library error FLATPAK_ERROR_REF_NOT_FOUND returned instead of
+   G_IO_ERROR_NOT_FOUND.
+ * Fix installed tests when running on a tty.
+ * Fix a double-set of a GError.
+ * Grant more permissions on the /run/host/monitor directory to
+   work with e.g. toolbox on the host.
+
+Changes in 1.3.4
+================
+
+This version changes how default remotes are configured. We still
+use files in /etc/flatpak/remotes.d, however instead of the old
+*.conf files we now use regular flatpakrepo files, and the first
+time you use flatpak these are automatically imported.
+
+The advantage of this new model is that the configuration is imported
+once, but then becomes writable and removable, just like a manually
+added remote. In the previous model the remote was always there and it
+was impossible to change or remove.
+
+However, this means that anyone currently shipping a .conf file with
+a distro needs to change this to a .flatpakrepo file.
+
+ * Support for flatpakrepo files in /etc/flatpak/remotes.d
+ * Support for client side filtering of a remote. This allows you
+   to limit what apps are seen from a remote, using either a whitelist
+   or a blacklist model.
+ * Add library API to easily add remotes from flatpakref files.
+ * Fix the dconf support.
+ * Fix app updates in system-wide OCI remotes.
+ * Fix CLI completion if G_MESSAGES_DEBUG is set
+ * Add a docker seccomp profile for running flatpak inside a container.
+ * Look for the new default dbus session socket at $XDG_RUNTIME_DIR/bus
+ * Improve ability to pull from multiple p2p sources (needs latest ostree).
+
+Changes in 1.3.3
+================
+
+ * Fixed a crash in the system helper that made installation via
+   the helper sometimes not work.
+ * Fix build with older versions of glib
+ * The list and remote-ls output is now less wide, not showing the
+   appdata summary by default and only showing the archtecture and
+   origin if necessary (i.e. not if its the same for all rows).
+ * flatpak remote-ls now filters end-of-lifed apps by default.
+ * flatpak permission-reset now supports --all
+ * Flatpak now works will all set values of umask.
+ * The flatpak profile.d snippet now works if flatpak is not installed
+   (in case it gets left over after deletion).
+ * Fixed flatpak install --noninteractive still asking questions in some cases.
+ * flatpak now returns a failure exit status if you abort the operation early.
+ * flatpak remote-ls and remote-info now supports --cached to prefer
+   using locally cached data.
+ * libflatpak grew a FLATPAK_QUERY_FLAGS_ONLY_CACHED that allows you to
+   get at locally cached data about remotes without doing network i/o.
+ * Documentation updates
+
+Changes in 1.3.2
+================
+
+This release contains a major change in how flatpak does system-wide
+installation as a user. We used to pull into a temporary user-owned
+directory and then ask the flatpak system-helper to import from this
+directory. Unfortunately, since we can't trust the user directory
+it had to copy these files as they were being imported, which caused
+unnecessary i/o, as well as temporarily using more diskspace.
+
+The new setup uses a new custom fuse filesystem which the user writes
+to, and then when this is done we can safely revoke any access to this
+from the user, meaning the files can be directly imported into the
+system repository without needing to make a copy.
+
+However, this makes packaging flatpak a bit more complex, as we now
+require flatpak to have a user. By default flatpak will look for a user
+called "flatpak", and for the new feature to work you need to create
+it in your package. If you want to use a different name you can specify
+that in configure as --with-system-helper-user=USERNAME.
+
+Additionally, the new code passed a unix socket over the system bus, which
+is prohibited by the default selinux policy. To work around this flatpak
+now ships with a custom selinux module (enable with --enable-selinux-module).
+For the new feature to work you need to install this module and ensure
+the flatpak-system-helper binary gets the proper selinux context.
+
+Other changes:
+
+ * We now support specifying a rebasing version of end-of-life, where
+   the clients will be asked if they want to use the new version. At
+   runtime any old per-user application data will be migrated to the
+   new name. Note: This works for the CLI app, but needs some changes
+   for installers to take advantage of the automatic rebasing.
+ * New permission --socket=pcsc for access to smart cards.
+ * We now store the description, comment, icon and homepage fields from
+   the flatpakrepo files in the remote confiuration and have new library
+   APIs to read these back.
+ * The fields above are now also settable in a repo and changes to these
+   can propagate to clients.
+ * run now tries the determine what branch to use when you run a runtime.
+ * Print maximum icon size when icon-validator fails.
+ * flatpak override can now disallow access to a dbus name.
+ * flatpak list now has a new runtime column
+
+Changes in 1.3.1
 ================
 
 This release fixes CVE-2019-10063.
@@ -38,12 +587,28 @@ seccomp to prevent sandboxed apps from using the (dangerous) TIOCSTI ioctl
 was only incomplete on 64bit arches. This is now fixed.
 
  * seccomp: Only compare the low 32bit of the TIOCSTI ioctl args.
- * Support multiple nvidia cards on the machine
- * Fix support for systems where XDG_RUNTIME_DIR is /var/run which is a symlink
-   like gentoo.
- * Fix potential crash when updating apps.
+ * Fix the required runtime prompt during installation.
+ * When installing, only check dependencies from the same installation.
  * flatpak list --arch now works correctly again.
- * Update translations
+ * Create origin symlinks in appstream branch for libappstream compat.
+
+Changes in 1.3.0
+================
+
+This is the start of a new unstable series, targeting stable release
+as 1.4.0.
+
+Major changes:
+
+ * Support systems with multiple nvidia devices
+ * Checks are update output are green again
+ * Fix support for systems like gentoo where /var/run is a symlink.
+ * Initial support for sandboxed dconf support.
+ * build-update-repo: New options --no-update-[summary,appstream] and
+   --static-delta-ignore-ref=PATTERN.
+ * Regenerating the appstream branch is now much faster for large
+   repositories.
+ * We no longer limit the size of svgs in the icon validator.
 
 Changes in 1.2.3
 ================
@@ -343,7 +908,7 @@ Changes in 1.0.1
 ================
 
 This fixes various build and test failures that were detected when
-packaging 1.0, as well as translations and doc udpates. It also
+packaging 1.0, as well as translations and doc updates. It also
 has some minor features, including a new subcommand "flatpak ps"
 to list the running flatpak instances for your user.
 
@@ -568,7 +1133,7 @@ Major changes in 0.11.8
    install/update operation.
  * We now respect multiple extension versions matches when auto-downloading extensions.
  * New http header Flatpak-Upgrade-From sent when upgrading.
- * Commands like "flatpak info/list/remotes/seach" now work properly if /var/lib/flatpak doesn't exist.
+ * Commands like "flatpak info/list/remotes/search" now work properly if /var/lib/flatpak doesn't exist.
  * The bubblewrap version required for system-bwrap is now 0.2.1.
 
 Major changes in 0.11.7
@@ -716,11 +1281,11 @@ Major changes in 0.10.1
 
  * New command "flatpak remote-info" shows information about applications
    in a remote. In particular the --log operation shows the history and
-   can be used in combination with flatpak upate --commit=XYZ to roll
+   can be used in combination with flatpak update --commit=XYZ to roll
    back to a previous version.
  * New command "flatpak search" which allows you to search the appstream
    data from the commandline.
- * flatpak update now upates appstream data for all confured remotes, which
+ * flatpak update now updates appstream data for all confured remotes, which
    is important for search to work.
  * Allow automatic installation of gtk themes matching the active theme.
  * Handle the case when /etc/resolv.conf is a symlink
@@ -822,8 +1387,8 @@ Major changes in 0.9.11
  * You can now show all outstanding updates with: flatpak remote-ls --updates
  * The dbus filter "org.name.*" now means all subnames of org.name, not just
    the first level. This matches how dbus arg0namespace works, and how the
-   comming dbus container support will work.
- * Fixed segfauld on update
+   coming dbus container support will work.
+ * Fixed segfault on update
  * Better commandline tab completion
  * Flatpak now exposes host icons readonly as /run/host/share/icons to the sandbox.
 
@@ -934,7 +1499,7 @@ Major changes in 0.9.5
  * document-portal: The app-specific directory is always accessible
    to the app, take this into consideration for AddFull.
  * builder: Don't warn for unknown keys if they start with x-
- * Fix a race condition whe restarting the document portal
+ * Fix a race condition when restarting the document portal
  * build-update-repo: Don't list removed deltas in the summary
  * list: Don't show .Locale/.Debug/.Sources by default. Show with -a.
  * remote-ls: Don't show .Locale/.Debug/.Sources, or non-primary
@@ -956,7 +1521,7 @@ Major changes in 0.9.4
  * Now requires ostree 2017.6 and bubblewrap 0.1.8
  * Better progress reporting in CLI and UI
  * Improved output from commands info, list, remotes,
-   remote-ls: More detail, colors, nicer table formating.
+   remote-ls: More detail, colors, nicer table formatting.
  * New command flatpak repo that lets you show information
    about local repositories.
  * When launching exported desktop files, the paths
@@ -1086,7 +1651,7 @@ Major changes in 0.9.2
  * OCI support now works with the system-helper for unprivileged systemwide
    installation.
  * Experimental support for the new ostree bare-user-only repo mode that
-   allows flatpak to run on filesytems without xattrs. Set
+   allows flatpak to run on filesystems without xattrs. Set
    FLATPAK_OSTREE_REPO_MODE=user-only in the environment to use this.
  * builder: New property disable-fsckobjects for git sources
  * builder: New property commit for git sources. This lets you specify
@@ -1115,7 +1680,7 @@ Major changes in 0.9.2
    this is optional in later versions of ostree. Instead we use
    they python SimpleHTTPServer.
  * The minimum glib version has been corrected to 2.44.
- * The minumum automake version has been increased to 1.13.4
+ * The minimum automake version has been increased to 1.13.4
    because some older version didn't work.
 
 Major changes in 0.9.1
@@ -1461,7 +2026,7 @@ Major changes in 0.6.12
    can now only have dashes in the last element. This allows
    apps to export files such as org.my.App-extra.desktop which
    was used by the libreoffice builds.
- * By default the kernel keyring is not accessable, as it is
+ * By default the kernel keyring is not accessible, as it is
    not containable.
  * Some robustness fixes for build-commit-from
  * Better error messages
@@ -1561,7 +2126,7 @@ Major changes in 0.6.8
  * Requires OSTree 2016.7, allowing us to enable use of static delta
    for system downloads again.
  * Support --no-desktop which allows you to run a flatpak app outside
-   a desktop, with some loss of functionallity (for example, there
+   a desktop, with some loss of functionality (for example, there
    will be no systemd --user scope created for the app)..
  * More documentation.
  * Memory leak fixes.

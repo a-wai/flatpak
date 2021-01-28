@@ -26,9 +26,11 @@
 
 /* In numerical order of more privs */
 typedef enum {
+  FLATPAK_FILESYSTEM_MODE_NONE         = 0,
   FLATPAK_FILESYSTEM_MODE_READ_ONLY    = 1,
   FLATPAK_FILESYSTEM_MODE_READ_WRITE   = 2,
   FLATPAK_FILESYSTEM_MODE_CREATE       = 3,
+  FLATPAK_FILESYSTEM_MODE_LAST         = FLATPAK_FILESYSTEM_MODE_CREATE
 } FlatpakFilesystemMode;
 
 typedef struct _FlatpakExports FlatpakExports;
@@ -37,8 +39,10 @@ void flatpak_exports_free (FlatpakExports *exports);
 FlatpakExports *flatpak_exports_new (void);
 void flatpak_exports_append_bwrap_args (FlatpakExports *exports,
                                         FlatpakBwrap   *bwrap);
-void flatpak_exports_add_home_expose (FlatpakExports       *exports,
-                                      FlatpakFilesystemMode mode);
+void flatpak_exports_add_host_etc_expose (FlatpakExports       *exports,
+                                          FlatpakFilesystemMode mode);
+void flatpak_exports_add_host_os_expose (FlatpakExports       *exports,
+                                         FlatpakFilesystemMode mode);
 void flatpak_exports_add_path_expose (FlatpakExports       *exports,
                                       FlatpakFilesystemMode mode,
                                       const char           *path);
@@ -56,6 +60,9 @@ FlatpakFilesystemMode flatpak_exports_path_get_mode (FlatpakExports *exports,
                                                      const char     *path);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (FlatpakExports, flatpak_exports_free);
+
+void flatpak_exports_take_host_fd (FlatpakExports *exports,
+                                   int             fd);
 
 
 #endif /* __FLATPAK_EXPORTS_H__ */

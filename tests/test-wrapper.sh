@@ -5,22 +5,30 @@ for feature in $(echo $1 | sed "s/^.*@\(.*\).wrap/\1/" | tr "," "\n"); do
         system)
             export USE_SYSTEMDIR=yes
             ;;
+        system-norevokefs)
+            export USE_SYSTEMDIR=yes
+            export FLATPAK_DISABLE_REVOKEFS=yes
+            ;;
         user)
             export USE_SYSTEMDIR=no
             ;;
         deltas)
             export USE_DELTAS=yes
             ;;
+        newsummary)
+            export SUMMARY_FORMAT=new
+            ;;
+        oldsummary)
+            export SUMMARY_FORMAT=old
+            ;;
         nodeltas)
             export USE_DELTAS=no
             ;;
-        collections)
-            export USE_COLLECTIONS_IN_SERVER=yes
-            export USE_COLLECTIONS_IN_CLIENT=yes
+        labels)
+            export USE_OCI_LABELS=yes
             ;;
-        collections-server-only)
-            export USE_COLLECTIONS_IN_SERVER=yes
-            export USE_COLLECTIONS_IN_CLIENT=no
+        annotations)
+            export USE_OCI_ANNOTATIONS=yes
             ;;
         *)
             echo unsupported test feature $feature

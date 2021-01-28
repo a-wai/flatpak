@@ -130,7 +130,7 @@ flatpak_instance_get_id (FlatpakInstance *self)
  *
  * Note that this may return %NULL for sandboxes that don't have an application.
  *
- * Returns: the application ID
+ * Returns: (nullable): the application ID or %NULL
  *
  * Since: 1.1
  */
@@ -262,7 +262,7 @@ static int get_child_pid (const char *dir);
  * Gets the PID of the application process in the sandbox.
  *
  * See flatpak_instance_get_pid().
- * 
+ *
  * Note that this function may return 0 immediately after launching
  * a sandbox, for a short amount of time.
  *
@@ -397,30 +397,30 @@ flatpak_instance_new (const char *dir)
       if (g_key_file_has_group (priv->info, FLATPAK_METADATA_GROUP_APPLICATION))
         {
           priv->app = g_key_file_get_string (priv->info,
-              FLATPAK_METADATA_GROUP_APPLICATION, FLATPAK_METADATA_KEY_NAME, NULL);
+                                             FLATPAK_METADATA_GROUP_APPLICATION, FLATPAK_METADATA_KEY_NAME, NULL);
           priv->runtime = g_key_file_get_string (priv->info,
-              FLATPAK_METADATA_GROUP_APPLICATION, FLATPAK_METADATA_KEY_RUNTIME, NULL);
+                                                 FLATPAK_METADATA_GROUP_APPLICATION, FLATPAK_METADATA_KEY_RUNTIME, NULL);
         }
       else
         {
           priv->runtime = g_key_file_get_string (priv->info,
-              FLATPAK_METADATA_GROUP_RUNTIME, FLATPAK_METADATA_KEY_RUNTIME, NULL);
+                                                 FLATPAK_METADATA_GROUP_RUNTIME, FLATPAK_METADATA_KEY_RUNTIME, NULL);
         }
 
       priv->arch = g_key_file_get_string (priv->info,
-          FLATPAK_METADATA_GROUP_INSTANCE, FLATPAK_METADATA_KEY_ARCH, NULL);
+                                          FLATPAK_METADATA_GROUP_INSTANCE, FLATPAK_METADATA_KEY_ARCH, NULL);
       priv->branch = g_key_file_get_string (priv->info,
-          FLATPAK_METADATA_GROUP_INSTANCE, FLATPAK_METADATA_KEY_BRANCH, NULL);
+                                            FLATPAK_METADATA_GROUP_INSTANCE, FLATPAK_METADATA_KEY_BRANCH, NULL);
       priv->commit = g_key_file_get_string (priv->info,
-          FLATPAK_METADATA_GROUP_INSTANCE, FLATPAK_METADATA_KEY_APP_COMMIT, NULL);
+                                            FLATPAK_METADATA_GROUP_INSTANCE, FLATPAK_METADATA_KEY_APP_COMMIT, NULL);
       priv->runtime_commit = g_key_file_get_string (priv->info,
-          FLATPAK_METADATA_GROUP_INSTANCE, FLATPAK_METADATA_KEY_RUNTIME_COMMIT, NULL);
+                                                    FLATPAK_METADATA_GROUP_INSTANCE, FLATPAK_METADATA_KEY_RUNTIME_COMMIT, NULL);
     }
 
   return self;
 }
 
-static FlatpakInstance *
+FlatpakInstance *
 flatpak_instance_new_for_id (const char *id)
 {
   g_autofree char *dir = NULL;
@@ -429,29 +429,17 @@ flatpak_instance_new_for_id (const char *id)
   return flatpak_instance_new (dir);
 }
 
-/**
- * flatpak_instance_get_all:
- *
- * Gets FlatpakInstance objects for all running sandboxes in the current session.
- *
- * Returns: (transfer full) (element-type FlatpakInstance): a #GPtrArray of
- *   #FlatpakInstance objects
- *
- * Since: 1.1
- */
-GPtrArray *
-flatpak_instance_get_all (void)
+void
+flatpak_instance_iterate_all_and_gc (GPtrArray *out_instances)
 {
-  g_autoptr(GPtrArray) instances = NULL;
-  g_autofree char *base_dir = NULL;
+
+  g_autofree char *base_dir = g_build_filename (g_get_user_runtime_dir (), ".flatpak", NULL);
   g_auto(GLnxDirFdIterator) iter = { 0 };
   struct dirent *dent;
 
-  instances = g_ptr_array_new_with_free_func ((GDestroyNotify) g_object_unref);
-  base_dir = g_build_filename (g_get_user_runtime_dir (), ".flatpak", NULL);
-
+  /* Clean up unused instances */
   if (!glnx_dirfd_iterator_init_at (AT_FDCWD, base_dir, FALSE, &iter, NULL))
-    return g_steal_pointer (&instances);
+    return;
 
   while (TRUE)
     {
@@ -485,9 +473,29 @@ flatpak_instance_get_all (void)
               continue;
             }
 
-          g_ptr_array_add (instances, flatpak_instance_new_for_id (dent->d_name));
+          if (out_instances != NULL)
+            g_ptr_array_add (out_instances, flatpak_instance_new_for_id (dent->d_name));
         }
     }
+}
+
+/**
+ * flatpak_instance_get_all:
+ *
+ * Gets FlatpakInstance objects for all running sandboxes in the current session.
+ *
+ * Returns: (transfer full) (element-type FlatpakInstance): a #GPtrArray of
+ *   #FlatpakInstance objects
+ *
+ * Since: 1.1
+ */
+GPtrArray *
+flatpak_instance_get_all (void)
+{
+  g_autoptr(GPtrArray) instances = NULL;
+
+  instances = g_ptr_array_new_with_free_func ((GDestroyNotify) g_object_unref);
+  flatpak_instance_iterate_all_and_gc (instances);
 
   return g_steal_pointer (&instances);
 }
@@ -510,4 +518,3 @@ flatpak_instance_is_running (FlatpakInstance *self)
 
   return FALSE;
 }
-

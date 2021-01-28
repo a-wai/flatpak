@@ -37,7 +37,10 @@
 #include "flatpak-utils-private.h"
 #include "flatpak-run-private.h"
 
+static gboolean opt_all;
+
 static GOptionEntry options[] = {
+  { "all", 0, 0, G_OPTION_ARG_NONE, &opt_all, N_("Reset all permissions"), NULL },
   { NULL }
 };
 
@@ -77,7 +80,7 @@ remove_for_app (XdpDbusPermissionStore *store,
       g_variant_iter_init (&iter, permissions);
       while (g_variant_iter_loop (&iter, "{s@as}", &key, &value))
         {
-          if (strcmp (key, app_id) == 0)
+          if (app_id == NULL || strcmp (key, app_id) == 0)
             continue;
 
           g_variant_builder_add (&builder, "{s@as}", key, value);
@@ -95,7 +98,7 @@ remove_for_app (XdpDbusPermissionStore *store,
 
 gboolean
 reset_permissions_for_app (const char *app_id,
-                           GError **error)
+                           GError    **error)
 {
   g_autoptr(GDBusConnection) session_bus = NULL;
   XdpDbusPermissionStore *store = NULL;
@@ -139,10 +142,13 @@ flatpak_builtin_permission_reset (int argc, char **argv,
                                      NULL, cancellable, error))
     return FALSE;
 
-  if (argc != 2)
+  if ((opt_all && argc != 1) || (!opt_all && argc != 2))
     return usage_error (context, _("Wrong number of arguments"), error);
 
-  app_id = argv[1];
+  if (opt_all)
+    app_id = NULL;
+  else
+    app_id = argv[1];
 
   return reset_permissions_for_app (app_id, error);
 }
@@ -153,6 +159,8 @@ flatpak_complete_permission_reset (FlatpakCompletion *completion)
   g_autoptr(GOptionContext) context = NULL;
   g_autoptr(GDBusConnection) session_bus = NULL;
   XdpDbusPermissionStore *store = NULL;
+  g_autoptr(FlatpakDir) user_dir = NULL;
+  g_autoptr(FlatpakDir) system_dir = NULL;
 
   context = g_option_context_new ("");
 
@@ -179,8 +187,11 @@ flatpak_complete_permission_reset (FlatpakCompletion *completion)
       flatpak_complete_options (completion, global_entries);
       flatpak_complete_options (completion, options);
 
-      flatpak_complete_partial_ref (completion, FLATPAK_KINDS_APP, FALSE, flatpak_dir_get_user (), NULL);
-      flatpak_complete_partial_ref (completion, FLATPAK_KINDS_APP, FALSE, flatpak_dir_get_system_default (), NULL);
+
+      user_dir = flatpak_dir_get_user ();
+      system_dir = flatpak_dir_get_system_default ();
+      flatpak_complete_partial_ref (completion, FLATPAK_KINDS_APP, FALSE, user_dir, NULL);
+      flatpak_complete_partial_ref (completion, FLATPAK_KINDS_APP, FALSE, system_dir, NULL);
 
       break;
 

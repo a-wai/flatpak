@@ -32,24 +32,27 @@
 
 struct _FlatpakCliTransaction
 {
-  FlatpakTransaction parent;
+  FlatpakTransaction   parent;
 
-  gboolean           disable_interaction;
-  gboolean           stop_on_first_error;
-  GError            *first_operation_error;
+  gboolean             disable_interaction;
+  gboolean             stop_on_first_error;
+  gboolean             non_default_arch;
+  GError              *first_operation_error;
 
-  int                rows;
-  int                cols;
-  int                table_width;
-  int                table_height;
+  GHashTable          *eol_actions;
 
-  int                n_ops;
-  int                op;
-  int                op_progress;
+  int                  rows;
+  int                  cols;
+  int                  table_width;
+  int                  table_height;
 
-  gboolean           installing;
-  gboolean           updating;
-  gboolean           uninstalling;
+  int                  n_ops;
+  int                  op;
+  int                  op_progress;
+
+  gboolean             installing;
+  gboolean             updating;
+  gboolean             uninstalling;
 
   int                  download_col;
 
@@ -57,6 +60,8 @@ struct _FlatpakCliTransaction
   int                  progress_row;
   char                *progress_msg;
   int                  speed_len;
+
+  gboolean             did_interaction;
 };
 
 struct _FlatpakCliTransactionClass
@@ -79,6 +84,8 @@ choose_remote_for_ref (FlatpakTransaction *transaction,
 
   pref = strchr (for_ref, '/') + 1;
 
+  self->did_interaction = TRUE;
+
   if (self->disable_interaction)
     {
       g_print (_("Required runtime for %s (%s) found in remote %s\n"),
@@ -94,9 +101,9 @@ choose_remote_for_ref (FlatpakTransaction *transaction,
     }
   else
     {
-      flatpak_format_choices ((const char **)remotes,
-                              _("Required runtime for %s (%s) found in remotes: %s"),
-                              pref, runtime_ref, remotes[0]);
+      flatpak_format_choices ((const char **) remotes,
+                              _("Required runtime for %s (%s) found in remotes:"),
+                              pref, runtime_ref);
       chosen = flatpak_number_prompt (TRUE, 0, n_remotes, _("Which do you want to install (0 to abort)?"));
       chosen -= 1; /* convert from base-1 to base-0 (and -1 to abort) */
     }
@@ -113,6 +120,8 @@ add_new_remote (FlatpakTransaction            *transaction,
 {
   FlatpakCliTransaction *self = FLATPAK_CLI_TRANSACTION (transaction);
 
+  self->did_interaction = TRUE;
+
   if (self->disable_interaction)
     {
       g_print (_("Configuring %s as new remote '%s'"), url, remote_name);
@@ -122,7 +131,7 @@ add_new_remote (FlatpakTransaction            *transaction,
   if (reason == FLATPAK_TRANSACTION_REMOTE_GENERIC_REPO)
     {
       if (flatpak_yes_no_prompt (TRUE, /* default to yes on Enter */
-                                 _("The remote '%s', refered to by '%s' at location %s contains additional applications.\n"
+                                 _("The remote '%s', referred to by '%s' at location %s contains additional applications.\n"
                                    "Should the remote be kept for future installations?"),
                                  remote_name, from_id, url))
         return TRUE;
@@ -137,6 +146,51 @@ add_new_remote (FlatpakTransaction            *transaction,
     }
 
   return FALSE;
+}
+
+static void
+install_authenticator (FlatpakTransaction            *old_transaction,
+                       const char                    *remote,
+                       const char                    *ref)
+{
+  FlatpakCliTransaction *old_cli = FLATPAK_CLI_TRANSACTION (old_transaction);
+  g_autoptr(FlatpakTransaction)  transaction2 = NULL;
+  g_autoptr(GError) local_error = NULL;
+  FlatpakInstallation *installation = flatpak_transaction_get_installation (old_transaction);
+  FlatpakDir *dir = flatpak_installation_get_dir (installation, NULL);
+
+  if (dir == NULL)
+    {
+      /* This should not happen */
+      g_warning ("No dir in install_authenticator");
+      return;
+    }
+
+  old_cli->did_interaction = TRUE;
+
+  transaction2 = flatpak_cli_transaction_new (dir, old_cli->disable_interaction, TRUE, FALSE, &local_error);
+  if (transaction2 == NULL)
+    {
+      g_printerr ("Unable to install authenticator: %s\n", local_error->message);
+      return;
+    }
+
+  g_print ("Installing required authenticator for remote %s\n", remote);
+  if (!flatpak_transaction_add_install (transaction2, remote, ref, NULL, &local_error))
+    {
+      if (!g_error_matches (local_error, FLATPAK_ERROR, FLATPAK_ERROR_ALREADY_INSTALLED))
+        g_printerr ("Unable to install authenticator: %s\n", local_error->message);
+      return;
+    }
+
+  if (!flatpak_transaction_run (transaction2, NULL, &local_error))
+    {
+      if (!g_error_matches (local_error, FLATPAK_ERROR, FLATPAK_ERROR_ABORTED))
+        g_printerr ("Unable to install authenticator: %s\n", local_error->message);
+      return;
+    }
+
+  return;
 }
 
 static char *
@@ -199,9 +253,9 @@ redraw (FlatpakCliTransaction *self)
 }
 
 static void
-set_op_progress (FlatpakCliTransaction *self,
+set_op_progress (FlatpakCliTransaction       *self,
                  FlatpakTransactionOperation *op,
-                 const char *progress)
+                 const char                  *progress)
 {
   if (flatpak_fancy_output ())
     {
@@ -212,17 +266,17 @@ set_op_progress (FlatpakCliTransaction *self,
 }
 
 static void
-spin_op_progress (FlatpakCliTransaction *self,
+spin_op_progress (FlatpakCliTransaction       *self,
                   FlatpakTransactionOperation *op)
 {
   const char *p[] = {
-                     "|",
-                     "/",
-                     "—",
-                     "\\",
+    "|",
+    "/",
+    "—",
+    "\\",
   };
 
-  set_op_progress (self, op, p[self->op_progress++ % G_N_ELEMENTS(p)]);
+  set_op_progress (self, op, p[self->op_progress++ % G_N_ELEMENTS (p)]);
 }
 
 static char *
@@ -247,22 +301,21 @@ progress_changed_cb (FlatpakTransactionProgress *progress,
 {
   FlatpakCliTransaction *cli = data;
   FlatpakTransaction *self = FLATPAK_TRANSACTION (cli);
-  FlatpakTransactionOperation *op = flatpak_transaction_get_current_operation (self);
-
+  g_autoptr(FlatpakTransactionOperation) op = flatpak_transaction_get_current_operation (self);
   g_autoptr(GString) str = g_string_new ("");
   int i;
   int n_full, partial;
   g_autofree char *speed = NULL;
   int bar_length;
   const char *partial_blocks[] = {
-                                   " ",
-                                   "▏",
-                                   "▎",
-                                   "▍",
-                                   "▌",
-                                   "▋",
-                                   "▊",
-                                   "▉",
+    " ",
+    "▏",
+    "▎",
+    "▍",
+    "▌",
+    "▋",
+    "▊",
+    "▉",
   };
   const char *full_block = "█";
 
@@ -278,7 +331,7 @@ progress_changed_cb (FlatpakTransactionProgress *progress,
       g_autofree char *remaining = NULL;
       if (elapsed_time > 3 && percent > 0)
         {
-          guint64 total_time = elapsed_time * 100 / (double)percent;
+          guint64 total_time = elapsed_time * 100 / (double) percent;
           remaining = format_duration (total_time - elapsed_time);
         }
       speed = g_strdup_printf ("%s/s%s%s", formatted_bytes_sec, remaining ? "  " : "", remaining ? remaining : "");
@@ -290,10 +343,10 @@ progress_changed_cb (FlatpakTransactionProgress *progress,
   bar_length = MIN (20, cli->table_width - (strlen (cli->progress_msg) + 6 + cli->speed_len));
 
   n_full = (bar_length * percent) / 100;
-  partial = (((bar_length * percent) % 100) * G_N_ELEMENTS(partial_blocks) ) / 100;
+  partial = (((bar_length * percent) % 100) * G_N_ELEMENTS (partial_blocks)) / 100;
   /* The above should guarantee this: */
   g_assert (partial >= 0);
-  g_assert (partial < G_N_ELEMENTS(partial_blocks));
+  g_assert (partial < G_N_ELEMENTS (partial_blocks));
 
   g_string_append (str, cli->progress_msg);
   g_string_append (str, " ");
@@ -332,11 +385,10 @@ progress_changed_cb (FlatpakTransactionProgress *progress,
           g_autofree char *text = NULL;
           int row;
 
-          formatted_max = g_format_size (max);
-          if (transferred < 1024) // avoid "bytes"
-            formatted = g_strdup ("1.0 kB");
-          else
-            formatted = g_format_size (transferred);
+          // avoid "bytes"
+          formatted = transferred < 1000 ? g_format_size (1000) : g_format_size (transferred);
+          formatted_max = max < 1000 ? g_format_size (1000) : g_format_size (max);
+
           text = g_strdup_printf ("%s / %s", formatted, formatted_max);
           row = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (op), "row"));
           flatpak_table_printer_set_decimal_cell (cli->printer, row, cli->download_col, text);
@@ -345,12 +397,12 @@ progress_changed_cb (FlatpakTransactionProgress *progress,
         g_print ("\r%s", str->str); /* redraw failed, just update the progress */
     }
   else
-    g_print ("\r%s", str->str);
+    g_print ("\n%s", str->str);
 }
 
 static void
 set_progress (FlatpakCliTransaction *self,
-              const char *text)
+              const char            *text)
 {
   flatpak_table_printer_set_cell (self->printer, self->progress_row, 0, text);
 }
@@ -409,7 +461,7 @@ new_operation (FlatpakTransaction          *transaction,
   self->progress_msg = g_steal_pointer (&text);
 
   g_signal_connect (progress, "changed", G_CALLBACK (progress_changed_cb), self);
-  flatpak_transaction_progress_set_update_frequency (progress, FLATPAK_CLI_UPDATE_FREQUENCY);
+  flatpak_transaction_progress_set_update_frequency (progress, FLATPAK_CLI_UPDATE_INTERVAL_MS);
 }
 
 static void
@@ -422,9 +474,9 @@ operation_done (FlatpakTransaction          *transaction,
   FlatpakTransactionOperationType op_type = flatpak_transaction_operation_get_operation_type (op);
 
   if (op_type == FLATPAK_TRANSACTION_OPERATION_UNINSTALL)
-    set_op_progress (self, op, "-");
+    set_op_progress (self, op, FLATPAK_ANSI_GREEN "-" FLATPAK_ANSI_COLOR_RESET);
   else
-    set_op_progress (self, op, "✓");
+    set_op_progress (self, op, FLATPAK_ANSI_GREEN "✓" FLATPAK_ANSI_COLOR_RESET);
 
   if (flatpak_fancy_output ())
     redraw (self);
@@ -474,14 +526,16 @@ operation_error (FlatpakTransaction            *transaction,
     msg = g_strdup_printf (_("%s needs a later flatpak version"), flatpak_ref_get_name (rref));
   else if (g_error_matches (error, FLATPAK_ERROR, FLATPAK_ERROR_OUT_OF_SPACE))
     msg = g_strdup (_("Not enough disk space to complete this operation"));
-  else
+  else if (error)
     msg = g_strdup (error->message);
+  else
+    msg = g_strdup (_("(internal error, please report)"));
 
-   if (!non_fatal && self->first_operation_error == NULL)
-     g_propagate_prefixed_error (&self->first_operation_error,
-                                 g_error_copy (error),
-                                 _("Failed to %s %s: "),
-                                 op_type_to_string (op_type), flatpak_ref_get_name (rref));
+  if (!non_fatal && self->first_operation_error == NULL)
+    g_propagate_prefixed_error (&self->first_operation_error,
+                                g_error_copy (error),
+                                _("Failed to %s %s: "),
+                                op_type_to_string (op_type), flatpak_ref_get_name (rref));
 
   text = g_strconcat (non_fatal ? _("Warning:") : _("Error:"), " ", msg, NULL);
 
@@ -494,7 +548,7 @@ operation_error (FlatpakTransaction            *transaction,
       redraw (self);
     }
   else
-    g_print ("\r%-*s\n", self->table_width, text);
+    g_printerr ("\r%-*s\n", self->table_width, text);
 
   if (!non_fatal && self->stop_on_first_error)
     return FALSE;
@@ -502,35 +556,237 @@ operation_error (FlatpakTransaction            *transaction,
   return TRUE; /* Continue */
 }
 
-static void
-end_of_lifed (FlatpakTransaction *transaction,
-              const char         *ref,
-              const char         *reason,
-              const char         *rebase)
+static gboolean
+webflow_start (FlatpakTransaction *transaction,
+               const char         *remote,
+               const char         *url,
+               GVariant           *options,
+               guint               id)
 {
   FlatpakCliTransaction *self = FLATPAK_CLI_TRANSACTION (transaction);
-  g_autoptr(FlatpakRef) rref = flatpak_ref_parse (ref, NULL);
-  g_autofree char *msg = NULL;
+  const char *browser;
+  g_autoptr(GError) local_error = NULL;
+  const char *args[3] = { NULL, url, NULL };
 
-  if (rebase)
-    msg = g_strdup_printf (_("Info: %s is end-of-life, in preference of %s"),
-                           flatpak_ref_get_name (rref), rebase);
-  else if (reason)
-    msg = g_strdup_printf (_("Info: %s is end-of-life, with reason: %s\n"),
-                           flatpak_ref_get_name (rref), reason);
+  self->did_interaction = TRUE;
 
-  if (flatpak_fancy_output ())
+  if (!self->disable_interaction)
     {
-      flatpak_table_printer_set_cell (self->printer, self->progress_row, 0, msg);
-      self->progress_row++;
-      flatpak_table_printer_add_span (self->printer, "");
-      flatpak_table_printer_finish_row (self->printer);
-      redraw (self);
+      g_print (_("Authentication required for remote '%s'\n"), remote);
+      if (!flatpak_yes_no_prompt (TRUE, _("Open browser?")))
+        return FALSE;
+    }
+
+  /* Allow hard overrides with $BROWSER */
+  browser = g_getenv ("BROWSER");
+  if (browser != NULL)
+    {
+      args[0] = browser;
+      if (!g_spawn_async (NULL, (char **)args, NULL, G_SPAWN_SEARCH_PATH,
+                          NULL, NULL, NULL, &local_error))
+        {
+          g_printerr ("Failed to start browser %s: %s\n", browser, local_error->message);
+          return FALSE;
+        }
     }
   else
-    g_print ("\r%-*s\n", self->table_width, msg);
+    {
+      if (!g_app_info_launch_default_for_uri (url, NULL, &local_error))
+        {
+          g_printerr ("Failed to show url: %s\n", local_error->message);
+          return FALSE;
+        }
+    }
+
+  g_print ("Waiting for browser...\n");
+
+  return TRUE;
 }
 
+static void
+webflow_done (FlatpakTransaction *transaction,
+              GVariant           *options,
+              guint               id)
+{
+  g_print ("Browser done\n");
+}
+
+static gboolean
+basic_auth_start (FlatpakTransaction *transaction,
+                  const char         *remote,
+                  const char         *realm,
+                  GVariant           *options,
+                  guint               id)
+{
+  FlatpakCliTransaction *self = FLATPAK_CLI_TRANSACTION (transaction);
+  char *user, *password, *previous_error = NULL;
+
+  if (self->disable_interaction)
+    return FALSE;
+
+  self->did_interaction = TRUE;
+
+  if (g_variant_lookup (options, "previous-error", "&s", &previous_error))
+    g_print ("%s\n", previous_error);
+
+  g_print (_("Login required remote %s (realm %s)\n"), remote, realm);
+  user = flatpak_prompt (FALSE, _("User"));
+  if (user == NULL)
+    return FALSE;
+
+  password = flatpak_password_prompt (_("Password"));
+  if (password == NULL)
+    return FALSE;
+
+  flatpak_transaction_complete_basic_auth (transaction, id, user, password, NULL);
+  return TRUE;
+}
+
+
+typedef enum {
+  EOL_UNDECIDED,
+  EOL_IGNORE,        /* Don't do anything, we already printed a warning */
+  EOL_NO_REBASE,     /* Choose to not rebase */
+  EOL_REBASE,        /* Choose to rebase */
+} EolAction;
+
+static gboolean
+end_of_lifed_with_rebase (FlatpakTransaction *transaction,
+                          const char         *remote,
+                          const char         *ref_str,
+                          const char         *reason,
+                          const char         *rebased_to_ref,
+                          const char        **previous_ids)
+{
+  FlatpakCliTransaction *self = FLATPAK_CLI_TRANSACTION (transaction);
+  g_autoptr(FlatpakDecomposed) ref = flatpak_decomposed_new_from_ref (ref_str, NULL);
+  g_autofree char *name = NULL;
+  EolAction action = EOL_UNDECIDED;
+  EolAction old_action = EOL_UNDECIDED;
+  gboolean can_rebase = rebased_to_ref != NULL && remote != NULL;
+  FlatpakInstallation *installation = flatpak_transaction_get_installation (transaction);
+  FlatpakDir *dir = flatpak_installation_get_dir (installation, NULL);
+
+  if (ref == NULL)
+    return FALSE; /* Shouldn't happen, the ref should be valid */
+
+  name = flatpak_decomposed_dup_id (ref);
+
+  self->did_interaction = TRUE;
+
+  if (flatpak_decomposed_id_is_subref (ref))
+    {
+      GLNX_HASH_TABLE_FOREACH_KV (self->eol_actions, FlatpakDecomposed *, eoled_ref, gpointer, value)
+        {
+          guint old_eol_action = GPOINTER_TO_UINT (value);
+
+          if (flatpak_decomposed_id_is_subref_of (ref, eoled_ref))
+              {
+                old_action = old_eol_action; /* Do the same */
+                break;
+              }
+        }
+    }
+
+  if (old_action != EOL_UNDECIDED)
+    {
+      switch (old_action)
+        {
+        default:
+        case EOL_IGNORE:
+          if (!can_rebase)
+            action = EOL_IGNORE;
+          /* Else, ask if we want to rebase */
+          break;
+        case EOL_REBASE:
+        case EOL_NO_REBASE:
+          if (can_rebase)
+            action = old_action;
+          else
+            action = EOL_IGNORE;
+        }
+    }
+
+  if (action == EOL_UNDECIDED)
+    {
+      gboolean is_pinned = flatpak_dir_ref_is_pinned (dir, flatpak_decomposed_get_ref (ref));
+      g_autofree char *branch = flatpak_decomposed_dup_branch (ref);
+      action = EOL_IGNORE;
+
+      if (rebased_to_ref)
+        if (is_pinned)
+          g_print (_("Info: (pinned) %s//%s is end-of-life, in favor of %s\n"), name, branch, rebased_to_ref);
+        else
+          g_print (_("Info: %s//%s is end-of-life, in favor of %s\n"), name, branch, rebased_to_ref);
+      else if (reason)
+        {
+          if (is_pinned)
+            g_print (_("Info: (pinned) %s//%s is end-of-life, with reason:\n"), name, branch);
+          else
+            g_print (_("Info: %s//%s is end-of-life, with reason:\n"), name, branch);
+          g_print ("   %s\n", reason);
+        }
+
+      if (flatpak_decomposed_is_runtime (ref))
+        {
+          g_autoptr(GPtrArray) apps = flatpak_dir_list_app_refs_with_runtime (dir, ref, NULL, NULL);
+          if (apps && apps->len > 0)
+            {
+              g_print (_("Applications using this runtime:\n"));
+              g_print ("   ");
+              for (int i = 0; i < apps->len; i++)
+                {
+                  FlatpakDecomposed *app_ref = g_ptr_array_index (apps, i);
+                  g_autofree char *id = flatpak_decomposed_dup_id (app_ref);
+                  if (i != 0)
+                    g_print (", ");
+                  g_print ("%s", id);
+                }
+              g_print ("\n");
+            }
+        }
+
+      if (rebased_to_ref && remote)
+        {
+          if (self->disable_interaction ||
+              flatpak_yes_no_prompt (TRUE, _("Replace it with %s?"), rebased_to_ref))
+            {
+              if (self->disable_interaction)
+                g_print (_("Updating to rebased version\n"));
+
+              action = EOL_REBASE;
+            }
+          else
+            action = EOL_NO_REBASE;
+        }
+    }
+  else
+    {
+        g_debug ("%s is end-of-life, using action from parent ren", name);
+    }
+
+  /* Cache for later comparison and reuse */
+  g_hash_table_insert (self->eol_actions, flatpak_decomposed_ref (ref), GUINT_TO_POINTER (action));
+
+  if (action == EOL_REBASE)
+    {
+      g_autoptr(GError) error = NULL;
+
+      if (!flatpak_transaction_add_rebase (transaction, remote, rebased_to_ref, NULL, previous_ids, &error) ||
+          !flatpak_transaction_add_uninstall (transaction, ref_str, &error))
+        {
+          g_propagate_prefixed_error (&self->first_operation_error,
+                                      g_error_copy (error),
+                                      _("Failed to rebase %s to %s: "),
+                                      name, rebased_to_ref);
+          return FALSE;
+        }
+
+      return TRUE; /* skip update op, in favour of added uninstall */
+    }
+  else /* IGNORE or NO_REBASE */
+    return FALSE;
+}
 
 static int
 cmpstringp (const void *p1, const void *p2)
@@ -627,20 +883,20 @@ append_tags (GPtrArray *tags_array,
   for (i = 0; i < size; i++)
     {
       const char *tag = tags[i];
-      if (old_tags == NULL || !g_strv_contains ((const char * const *)old_tags, tag))
+      if (old_tags == NULL || !g_strv_contains ((const char * const *) old_tags, tag))
         g_ptr_array_add (tags_array, g_strdup (tag));
     }
 }
 
 static void
-print_perm_line (int idx,
+print_perm_line (int        idx,
                  GPtrArray *items,
-                 int cols)
+                 int        cols)
 {
   g_autoptr(GString) res = g_string_new (NULL);
   int i;
 
-  g_string_append_printf (res, "    [%d] %s", idx, (char *)items->pdata[0]);
+  g_string_append_printf (res, "    [%d] %s", idx, (char *) items->pdata[0]);
 
   for (i = 1; i < items->len; i++)
     {
@@ -652,10 +908,10 @@ print_perm_line (int idx,
         p = res->str;
 
       len = (res->str + strlen (res->str)) - p;
-      if (len + strlen ((char *)items->pdata[i]) + 2 >= cols)
-        g_string_append_printf (res, ",\n        %s", (char *)items->pdata[i]);     
+      if (len + strlen ((char *) items->pdata[i]) + 2 >= cols)
+        g_string_append_printf (res, ",\n        %s", (char *) items->pdata[i]);
       else
-        g_string_append_printf (res, ", %s", (char *)items->pdata[i]);
+        g_string_append_printf (res, ", %s", (char *) items->pdata[i]);
     }
 
   g_print ("%s\n", res->str);
@@ -663,9 +919,9 @@ print_perm_line (int idx,
 
 static void
 print_permissions (FlatpakCliTransaction *self,
-                   const char *ref,
-                   GKeyFile *metadata,
-                   GKeyFile *old_metadata)
+                   const char            *ref,
+                   GKeyFile              *metadata,
+                   GKeyFile              *old_metadata)
 {
   g_autoptr(FlatpakRef) rref = flatpak_ref_parse (ref, NULL);
   g_autoptr(GPtrArray) permissions = g_ptr_array_new_with_free_func (g_free);
@@ -775,7 +1031,6 @@ print_permissions (FlatpakCliTransaction *self,
     print_perm_line (j++, system_bus_own, cols);
   if (tags->len > 0)
     print_perm_line (j++, tags, cols);
-
 }
 
 static void
@@ -802,7 +1057,7 @@ message_handler (const gchar   *log_domain,
 }
 
 static gboolean
-transaction_ready (FlatpakTransaction *transaction)
+transaction_ready_pre_auth (FlatpakTransaction *transaction)
 {
   FlatpakCliTransaction *self = FLATPAK_CLI_TRANSACTION (transaction);
   GList *ops = flatpak_transaction_get_operations (transaction);
@@ -826,13 +1081,16 @@ transaction_ready (FlatpakTransaction *transaction)
         case FLATPAK_TRANSACTION_OPERATION_UNINSTALL:
           self->uninstalling = TRUE;
           break;
+
         case FLATPAK_TRANSACTION_OPERATION_INSTALL:
         case FLATPAK_TRANSACTION_OPERATION_INSTALL_BUNDLE:
           self->installing = TRUE;
           break;
+
         case FLATPAK_TRANSACTION_OPERATION_UPDATE:
           self->updating = TRUE;
           break;
+
         default:;
         }
     }
@@ -859,21 +1117,24 @@ transaction_ready (FlatpakTransaction *transaction)
 
   printer = self->printer = flatpak_table_printer_new ();
   i = 0;
+
   flatpak_table_printer_set_column_title (printer, i++, "   ");
   flatpak_table_printer_set_column_title (printer, i++, "   ");
+
   flatpak_table_printer_set_column_expand (printer, i, TRUE);
   flatpak_table_printer_set_column_title (printer, i++, _("ID"));
+
   flatpak_table_printer_set_column_expand (printer, i, TRUE);
+  if (!self->non_default_arch)
+    flatpak_table_printer_set_column_skip_unique (printer, i, TRUE);
   flatpak_table_printer_set_column_title (printer, i++, _("Arch"));
+
   flatpak_table_printer_set_column_expand (printer, i, TRUE);
   flatpak_table_printer_set_column_title (printer, i++, _("Branch"));
 
-  if (self->installing + self->updating + self->uninstalling > 1)
-    {
-      flatpak_table_printer_set_column_expand (printer, i, TRUE);
-      /* translators: This is short for operation, the title of a one-char column */
-      flatpak_table_printer_set_column_title (printer, i++, _("Op"));
-    }
+  flatpak_table_printer_set_column_expand (printer, i, TRUE);
+  /* translators: This is short for operation, the title of a one-char column */
+  flatpak_table_printer_set_column_title (printer, i++, _("Op"));
 
   if (self->installing || self->updating)
     {
@@ -900,37 +1161,42 @@ transaction_ready (FlatpakTransaction *transaction)
     {
       FlatpakTransactionOperation *op = l->data;
       FlatpakTransactionOperationType type = flatpak_transaction_operation_get_operation_type (op);
-      const char *ref = flatpak_transaction_operation_get_ref (op);
+      FlatpakDecomposed *ref = flatpak_transaction_operation_get_decomposed (op);
       const char *remote = flatpak_transaction_operation_get_remote (op);
-      g_auto(GStrv) parts = flatpak_decompose_ref (ref, NULL);
+      g_autofree char *id = flatpak_decomposed_dup_id (ref);
+      const char *branch = flatpak_decomposed_get_branch (ref);
+      g_autofree char *arch = flatpak_decomposed_dup_arch (ref);
       g_autofree char *rownum = g_strdup_printf ("%2d.", i);
 
       flatpak_table_printer_add_column (printer, rownum);
       flatpak_table_printer_add_column (printer, "   ");
-      flatpak_table_printer_add_column (printer, parts[1]);
-      flatpak_table_printer_add_column (printer, parts[2]);
-      flatpak_table_printer_add_column (printer, parts[3]);
-
-      if (self->installing + self->updating + self->uninstalling > 1)
-        flatpak_table_printer_add_column (printer, op_shorthand[type]);
+      flatpak_table_printer_add_column (printer, id);
+      flatpak_table_printer_add_column (printer, arch);
+      flatpak_table_printer_add_column (printer, branch);
+      flatpak_table_printer_add_column (printer, op_shorthand[type]);
 
       if (type == FLATPAK_TRANSACTION_OPERATION_INSTALL ||
           type == FLATPAK_TRANSACTION_OPERATION_INSTALL_BUNDLE ||
           type == FLATPAK_TRANSACTION_OPERATION_UPDATE)
         {
-          g_autoptr(FlatpakRef) rref = flatpak_ref_parse (ref, NULL);
           guint64 download_size;
           g_autofree char *formatted = NULL;
           g_autofree char *text = NULL;
+          const char *prefix;
 
           download_size = flatpak_transaction_operation_get_download_size (op);
           formatted = g_format_size (download_size);
 
-          flatpak_table_printer_add_column (printer, remote);
-          if (g_str_has_suffix (flatpak_ref_get_name (rref), ".Locale"))
-            text = g_strdup_printf ("< %s (%s)", formatted, _("partial"));
+          if (download_size > 0)
+            prefix = "< ";
           else
-            text = g_strdup_printf ("< %s", formatted);
+            prefix = "";
+
+          flatpak_table_printer_add_column (printer, remote);
+          if (flatpak_transaction_operation_get_subpaths (op) != NULL)
+            text = g_strdup_printf ("%s%s (%s)", prefix, formatted, _("partial"));
+          else
+            text = g_strdup_printf ("%s%s", prefix, formatted);
           flatpak_table_printer_add_decimal_column (printer, text);
         }
 
@@ -949,7 +1215,7 @@ transaction_ready (FlatpakTransaction *transaction)
 
   if (!self->disable_interaction)
     {
-      FlatpakInstallation *installation = flatpak_transaction_get_installation (transaction);
+      g_autoptr(FlatpakInstallation) installation = flatpak_transaction_get_installation (transaction);
       const char *name;
       const char *id;
       gboolean ret;
@@ -961,7 +1227,7 @@ transaction_ready (FlatpakTransaction *transaction)
 
       if (flatpak_installation_get_is_user (installation))
         ret = flatpak_yes_no_prompt (TRUE, _("Proceed with these changes to the user installation?"));
-      else if (g_strcmp0 (id, "default") == 0)
+      else if (g_strcmp0 (id, SYSTEM_DIR_DEFAULT_ID) == 0)
         ret = flatpak_yes_no_prompt (TRUE, _("Proceed with these changes to the system installation?"));
       else
         ret = flatpak_yes_no_prompt (TRUE, _("Proceed with these changes to the %s?"), name);
@@ -974,6 +1240,32 @@ transaction_ready (FlatpakTransaction *transaction)
     }
   else
     g_print ("\n\n");
+
+  self->did_interaction = FALSE;
+
+  return TRUE;
+}
+
+static gboolean
+transaction_ready (FlatpakTransaction *transaction)
+{
+  FlatpakCliTransaction *self = FLATPAK_CLI_TRANSACTION (transaction);
+  GList *ops = flatpak_transaction_get_operations (transaction);
+  GList *l;
+  FlatpakTablePrinter *printer;
+
+  if (ops == NULL)
+    return TRUE;
+
+  printer = self->printer;
+
+  if (self->did_interaction)
+    {
+      /* We did some interaction since ready_pre_auth which messes up the formating, so re-print table */
+      flatpak_table_printer_print_full (printer, 0, self->cols,
+                                        &self->table_height, &self->table_width);
+      g_print ("\n\n");
+    }
 
   for (l = ops; l; l = l->next)
     {
@@ -1013,12 +1305,19 @@ flatpak_cli_transaction_finalize (GObject *object)
 
   g_free (self->progress_msg);
 
+  g_hash_table_unref (self->eol_actions);
+
+  if (self->printer)
+    flatpak_table_printer_free (self->printer);
+
   G_OBJECT_CLASS (flatpak_cli_transaction_parent_class)->finalize (object);
 }
 
 static void
 flatpak_cli_transaction_init (FlatpakCliTransaction *self)
 {
+  self->eol_actions = g_hash_table_new_full ((GHashFunc)flatpak_decomposed_hash, (GEqualFunc)flatpak_decomposed_equal,
+                                             (GDestroyNotify)flatpak_decomposed_unref, NULL);
 }
 
 static gboolean flatpak_cli_transaction_run (FlatpakTransaction *transaction,
@@ -1034,24 +1333,28 @@ flatpak_cli_transaction_class_init (FlatpakCliTransactionClass *klass)
   object_class->finalize = flatpak_cli_transaction_finalize;
   transaction_class->add_new_remote = add_new_remote;
   transaction_class->ready = transaction_ready;
+  transaction_class->ready_pre_auth = transaction_ready_pre_auth;
   transaction_class->new_operation = new_operation;
   transaction_class->operation_done = operation_done;
   transaction_class->operation_error = operation_error;
   transaction_class->choose_remote_for_ref = choose_remote_for_ref;
-  transaction_class->end_of_lifed = end_of_lifed;
+  transaction_class->end_of_lifed_with_rebase = end_of_lifed_with_rebase;
   transaction_class->run = flatpak_cli_transaction_run;
+  transaction_class->webflow_start = webflow_start;
+  transaction_class->webflow_done = webflow_done;
+  transaction_class->basic_auth_start = basic_auth_start;
+  transaction_class->install_authenticator = install_authenticator;
 }
 
 FlatpakTransaction *
 flatpak_cli_transaction_new (FlatpakDir *dir,
                              gboolean    disable_interaction,
                              gboolean    stop_on_first_error,
+                             gboolean    non_default_arch,
                              GError    **error)
 {
   g_autoptr(FlatpakInstallation) installation = NULL;
   g_autoptr(FlatpakCliTransaction) self = NULL;
-
-  flatpak_dir_set_no_interaction (dir, disable_interaction);
 
   installation = flatpak_installation_new_for_dir (dir, NULL, error);
   if (installation == NULL)
@@ -1066,7 +1369,9 @@ flatpak_cli_transaction_new (FlatpakDir *dir,
 
   self->disable_interaction = disable_interaction;
   self->stop_on_first_error = stop_on_first_error;
+  self->non_default_arch = non_default_arch;
 
+  flatpak_transaction_set_no_interaction (FLATPAK_TRANSACTION (self), disable_interaction);
   flatpak_transaction_add_default_dependency_sources (FLATPAK_TRANSACTION (self));
 
   return (FlatpakTransaction *) g_steal_pointer (&self);

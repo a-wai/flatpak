@@ -29,9 +29,10 @@
 #include <gpgme.h>
 #include <libsoup/soup.h>
 #include "flatpak-oci-registry-private.h"
+#include "flatpak-utils-base-private.h"
 #include "flatpak-utils-private.h"
-
-G_DEFINE_QUARK (flatpak_oci_error, flatpak_oci_error)
+#include "flatpak-dir-private.h"
+#include "flatpak-zstd-decompressor-private.h"
 
 #define MAX_JSON_SIZE (1024 * 1024)
 
@@ -60,6 +61,7 @@ struct FlatpakOciRegistry
   gboolean is_docker;
   char    *uri;
   int      tmp_dfd;
+  char    *token;
 
   /* Local repos */
   int dfd;
@@ -97,6 +99,7 @@ flatpak_oci_registry_finalize (GObject *object)
   g_clear_object (&self->soup_session);
   g_clear_pointer (&self->base_uri, soup_uri_free);
   g_free (self->uri);
+  g_free (self->token);
 
   G_OBJECT_CLASS (flatpak_oci_registry_parent_class)->finalize (object);
 }
@@ -202,11 +205,32 @@ flatpak_oci_registry_init (FlatpakOciRegistry *self)
   self->tmp_dfd = -1;
 }
 
+gboolean
+flatpak_oci_registry_is_local (FlatpakOciRegistry *self)
+{
+  return self->dfd != -1;
+}
+
 const char *
 flatpak_oci_registry_get_uri (FlatpakOciRegistry *self)
 {
   return self->uri;
 }
+
+void
+flatpak_oci_registry_set_token (FlatpakOciRegistry *self,
+                                const char *token)
+{
+  g_free (self->token);
+  self->token = g_strdup (token);
+
+  if (self->token)
+    (void)glnx_file_replace_contents_at (self->dfd, ".token",
+                                         (guchar *)self->token,
+                                         strlen (self->token),
+                                         0, NULL, NULL);
+}
+
 
 FlatpakOciRegistry *
 flatpak_oci_registry_new (const char   *uri,
@@ -286,10 +310,33 @@ local_load_file (int           dfd,
   return bytes;
 }
 
+/* We just support the first http uri for now */
+static char *
+choose_alt_uri (SoupURI      *base_uri,
+                const char **alt_uris)
+{
+  int i;
+
+  if (alt_uris == NULL)
+    return NULL;
+
+  for (i = 0; alt_uris[i] != NULL; i++)
+    {
+      const char *alt_uri = alt_uris[i];
+      if (g_str_has_prefix (alt_uri, "http:") || g_str_has_prefix (alt_uri, "https:"))
+        return g_strdup (alt_uri);
+    }
+
+  return NULL;
+}
+
 static GBytes *
 remote_load_file (SoupSession  *soup_session,
                   SoupURI      *base,
                   const char   *subpath,
+                  const char  **alt_uris,
+                  const char   *token,
+                  char        **out_content_type,
                   GCancellable *cancellable,
                   GError      **error)
 {
@@ -297,19 +344,25 @@ remote_load_file (SoupSession  *soup_session,
   g_autoptr(GBytes) bytes = NULL;
   g_autofree char *uri_s = NULL;
 
-  uri = soup_uri_new_with_base (base, subpath);
-  if (uri == NULL)
+  uri_s = choose_alt_uri (base, alt_uris);
+  if (uri_s == NULL)
     {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-                   "Invalid relative url %s", subpath);
-      return NULL;
+      uri = soup_uri_new_with_base (base, subpath);
+      if (uri == NULL)
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                       "Invalid relative url %s", subpath);
+          return NULL;
+        }
+
+      uri_s = soup_uri_to_string (uri, FALSE);
     }
 
-  uri_s = soup_uri_to_string (uri, FALSE);
-  bytes = flatpak_load_http_uri (soup_session,
-                                 uri_s, FLATPAK_HTTP_FLAGS_ACCEPT_OCI,
-                                 NULL, NULL,
-                                 cancellable, error);
+  bytes = flatpak_load_uri (soup_session,
+                            uri_s, FLATPAK_HTTP_FLAGS_ACCEPT_OCI,
+                            token,
+                            NULL, NULL, out_content_type,
+                            cancellable, error);
   if (bytes == NULL)
     return NULL;
 
@@ -319,13 +372,15 @@ remote_load_file (SoupSession  *soup_session,
 static GBytes *
 flatpak_oci_registry_load_file (FlatpakOciRegistry *self,
                                 const char         *subpath,
+                                const char        **alt_uris,
+                                char              **out_content_type,
                                 GCancellable       *cancellable,
                                 GError            **error)
 {
   if (self->dfd != -1)
     return local_load_file (self->dfd, subpath, cancellable, error);
   else
-    return remote_load_file (self->soup_session, self->base_uri, subpath, cancellable, error);
+    return remote_load_file (self->soup_session, self->base_uri, subpath, alt_uris, self->token, out_content_type, cancellable, error);
 }
 
 static JsonNode *
@@ -355,7 +410,6 @@ static gboolean
 verify_oci_version (GBytes *oci_layout_bytes, gboolean *not_json, GCancellable *cancellable, GError **error)
 {
   const char *version;
-
   g_autoptr(JsonNode) node = NULL;
   JsonObject *oci_layout;
 
@@ -397,6 +451,7 @@ flatpak_oci_registry_ensure_local (FlatpakOciRegistry *self,
   int dfd;
   g_autoptr(GError) local_error = NULL;
   g_autoptr(GBytes) oci_layout_bytes = NULL;
+  g_autoptr(GBytes) token_bytes = NULL;
   gboolean not_json;
 
   if (self->dfd != -1)
@@ -458,6 +513,13 @@ flatpak_oci_registry_ensure_local (FlatpakOciRegistry *self,
   else if (!verify_oci_version (oci_layout_bytes, &not_json, cancellable, error))
     return FALSE;
 
+  if (self->dfd != -1)
+    {
+      token_bytes = local_load_file (self->dfd, ".token", cancellable, NULL);
+      if (token_bytes != NULL)
+        self->token = g_strndup (g_bytes_get_data (token_bytes, NULL), g_bytes_get_size (token_bytes));
+    }
+
   if (self->dfd == -1 && local_dfd != -1)
     self->dfd = glnx_steal_fd (&local_dfd);
 
@@ -503,7 +565,7 @@ flatpak_oci_registry_initable_init (GInitable    *initable,
   gboolean res;
 
   if (self->tmp_dfd == -1 &&
-      !glnx_opendirat (AT_FDCWD, "/tmp", TRUE, &self->tmp_dfd, error))
+      !glnx_opendirat (AT_FDCWD, "/var/tmp", TRUE, &self->tmp_dfd, error))
     return FALSE;
 
   if (g_str_has_prefix (self->uri, "file:/"))
@@ -535,7 +597,7 @@ flatpak_oci_registry_load_index (FlatpakOciRegistry *self,
 
   g_assert (self->valid);
 
-  bytes = flatpak_oci_registry_load_file (self, "index.json", cancellable, &local_error);
+  bytes = flatpak_oci_registry_load_file (self, "index.json", NULL, NULL, cancellable, &local_error);
   if (bytes == NULL)
     {
       g_propagate_error (error, g_steal_pointer (&local_error));
@@ -628,6 +690,7 @@ static char *
 get_digest_subpath (FlatpakOciRegistry *self,
                     const char         *repository,
                     gboolean            is_manifest,
+                    gboolean            allow_tag,
                     const char         *digest,
                     GError            **error)
 {
@@ -635,9 +698,19 @@ get_digest_subpath (FlatpakOciRegistry *self,
 
   if (!g_str_has_prefix (digest, "sha256:"))
     {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
-                   "Unsupported digest type %s", digest);
-      return NULL;
+      if (!allow_tag)
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                       "Unsupported digest type %s", digest);
+          return NULL;
+        }
+
+      if (!self->is_docker)
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                       "Tags not supported for local oci dirs");
+          return NULL;
+        }
     }
 
   if (self->is_docker)
@@ -659,6 +732,7 @@ get_digest_subpath (FlatpakOciRegistry *self,
     }
   else
     {
+      /* As per above checks this is guaranteed to be a digest */
       g_string_append (s, "blobs/sha256/");
       g_string_append (s, digest + strlen ("sha256:"));
     }
@@ -685,6 +759,7 @@ flatpak_oci_registry_download_blob (FlatpakOciRegistry    *self,
                                     const char            *repository,
                                     gboolean               manifest,
                                     const char            *digest,
+                                    const char           **alt_uris,
                                     FlatpakLoadUriProgress progress_cb,
                                     gpointer               user_data,
                                     GCancellable          *cancellable,
@@ -695,7 +770,7 @@ flatpak_oci_registry_download_blob (FlatpakOciRegistry    *self,
 
   g_assert (self->valid);
 
-  subpath = get_digest_subpath (self, repository, manifest, digest, error);
+  subpath = get_digest_subpath (self, repository, manifest, FALSE, digest, error);
   if (subpath == NULL)
     return -1;
 
@@ -716,15 +791,20 @@ flatpak_oci_registry_download_blob (FlatpakOciRegistry    *self,
 
       /* remote case, download and verify */
 
-      uri = soup_uri_new_with_base (self->base_uri, subpath);
-      if (uri == NULL)
+      uri_s = choose_alt_uri (self->base_uri, alt_uris);
+      if (uri_s == NULL)
         {
-          g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
-                       "Invalid relative url %s", subpath);
-          return -1;
+          uri = soup_uri_new_with_base (self->base_uri, subpath);
+          if (uri == NULL)
+            {
+              g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                           "Invalid relative url %s", subpath);
+              return -1;
+            }
+
+          uri_s = soup_uri_to_string (uri, FALSE);
         }
 
-      uri_s = soup_uri_to_string (uri, FALSE);
 
       if (!flatpak_open_in_tmpdir_at (self->tmp_dfd, 0600, tmpfile_name,
                                       &out_stream, cancellable, error))
@@ -739,6 +819,7 @@ flatpak_oci_registry_download_blob (FlatpakOciRegistry    *self,
       if (!flatpak_download_http_uri (self->soup_session, uri_s,
                                       FLATPAK_HTTP_FLAGS_ACCEPT_OCI,
                                       out_stream,
+                                      self->token,
                                       progress_cb, user_data,
                                       cancellable, error))
         return -1;
@@ -769,6 +850,7 @@ flatpak_oci_registry_mirror_blob (FlatpakOciRegistry    *self,
                                   const char            *repository,
                                   gboolean               manifest,
                                   const char            *digest,
+                                  const char           **alt_uris,
                                   FlatpakLoadUriProgress progress_cb,
                                   gpointer               user_data,
                                   GCancellable          *cancellable,
@@ -776,7 +858,6 @@ flatpak_oci_registry_mirror_blob (FlatpakOciRegistry    *self,
 {
   g_autofree char *src_subpath = NULL;
   g_autofree char *dst_subpath = NULL;
-
   g_auto(GLnxTmpfile) tmpf = { 0 };
   g_autoptr(GOutputStream) out_stream = NULL;
   struct stat stbuf;
@@ -791,11 +872,11 @@ flatpak_oci_registry_mirror_blob (FlatpakOciRegistry    *self,
       return FALSE;
     }
 
-  src_subpath = get_digest_subpath (source_registry, repository, manifest, digest, error);
+  src_subpath = get_digest_subpath (source_registry, repository, manifest, FALSE, digest, error);
   if (src_subpath == NULL)
     return FALSE;
 
-  dst_subpath = get_digest_subpath (self, NULL, manifest, digest, error);
+  dst_subpath = get_digest_subpath (self, NULL, manifest, FALSE, digest, error);
   if (dst_subpath == NULL)
     return FALSE;
 
@@ -837,6 +918,7 @@ flatpak_oci_registry_mirror_blob (FlatpakOciRegistry    *self,
       uri_s = soup_uri_to_string (uri, FALSE);
       if (!flatpak_download_http_uri (source_registry->soup_session, uri_s,
                                       FLATPAK_HTTP_FLAGS_ACCEPT_OCI, out_stream,
+                                      self->token,
                                       progress_cb, user_data,
                                       cancellable, error))
         return FALSE;
@@ -867,32 +949,232 @@ flatpak_oci_registry_mirror_blob (FlatpakOciRegistry    *self,
   return TRUE;
 }
 
-GBytes *
-flatpak_oci_registry_load_blob (FlatpakOciRegistry *self,
+static const char *
+object_get_string_member_with_default (JsonNode *json,
+                                       const char *member_name,
+                                       const char *default_value)
+{
+  JsonNode *node;
+
+  if (json == NULL || !JSON_NODE_HOLDS_OBJECT(json))
+    return default_value;
+
+  node = json_object_get_member (json_node_get_object (json), member_name);
+
+  if (node == NULL || JSON_NODE_HOLDS_NULL (node) || JSON_NODE_TYPE (node) != JSON_NODE_VALUE)
+    return default_value;
+
+  return json_node_get_string (node);
+}
+
+
+static char *
+get_token_for_www_auth (FlatpakOciRegistry *self,
+                        const char    *repository,
+                        const char    *www_authenticate,
+                        const char    *auth,
+                        GCancellable  *cancellable,
+                        GError        **error)
+{
+  g_autoptr(GInputStream) auth_stream = NULL;
+  g_autoptr(SoupMessage) auth_msg = NULL;
+  g_autoptr(GHashTable) params = NULL;
+  g_autoptr(GHashTable) args = NULL;
+  const char *realm, *service, *scope, *token, *body_data;
+  g_autofree char *default_scope = NULL;
+  g_autoptr(SoupURI) auth_uri = NULL;
+  g_autoptr(GBytes) body = NULL;
+  g_autoptr(JsonNode) json = NULL;
+
+  if (g_ascii_strncasecmp (www_authenticate, "Bearer ", strlen ("Bearer ")) != 0)
+    {
+      flatpak_fail (error, _("Only Bearer authentication supported"));
+      return NULL;
+    }
+
+  params = soup_header_parse_param_list (www_authenticate + strlen ("Bearer "));
+
+  realm = g_hash_table_lookup (params, "realm");
+  if (realm == NULL)
+    {
+      flatpak_fail (error, _("Only realm in authentication request"));
+      return NULL;
+    }
+
+  auth_uri = soup_uri_new (realm);
+  if (auth_uri == NULL)
+    {
+      flatpak_fail (error, _("Invalid realm in authentication request"));
+      return NULL;
+    }
+
+  args = g_hash_table_new_full (g_str_hash, g_str_equal, NULL, NULL);
+  service = g_hash_table_lookup (params, "service");
+  if (service)
+    g_hash_table_insert (args, "service", (char *)service);
+
+  scope = g_hash_table_lookup (params, "scope");
+  if (scope == NULL)
+    scope = default_scope = g_strdup_printf("repository:%s:pull", repository);
+  g_hash_table_insert (args, "scope", (char *)scope);
+
+  soup_uri_set_query_from_form (auth_uri, args);
+
+  auth_msg = soup_message_new_from_uri ("GET", auth_uri);
+
+  if (auth)
+    {
+      g_autofree char *basic_auth = g_strdup_printf ("Basic %s", auth);
+      soup_message_headers_replace (auth_msg->request_headers, "Authorization", basic_auth);
+    }
+
+  auth_stream = soup_session_send (self->soup_session, auth_msg, NULL, error);
+  if (auth_stream == NULL)
+    return NULL;
+
+  body = flatpak_read_stream (auth_stream, TRUE, error);
+  if (body == NULL)
+    return NULL;
+
+  body_data = (char *)g_bytes_get_data (body, NULL);
+
+  if (!SOUP_STATUS_IS_SUCCESSFUL (auth_msg->status_code))
+    {
+      const char *error_detail = NULL;
+      json = json_from_string (body_data, NULL);
+      if (json)
+        {
+          error_detail = object_get_string_member_with_default (json, "details", NULL);
+          if (error_detail == NULL)
+            error_detail = object_get_string_member_with_default (json, "message", NULL);
+          if (error_detail == NULL)
+            error_detail = object_get_string_member_with_default (json, "error", NULL);
+        }
+      if (error_detail == NULL)
+        g_debug ("Unhandled error body format: %s", body_data);
+
+      if (auth_msg->status_code == SOUP_STATUS_UNAUTHORIZED)
+        {
+          if (error_detail)
+            flatpak_fail_error (error, FLATPAK_ERROR_NOT_AUTHORIZED, _("Authorization failed: %s"), error_detail);
+          else
+            flatpak_fail_error (error, FLATPAK_ERROR_NOT_AUTHORIZED, _("Authorization failed"));
+          return NULL;
+        }
+
+      flatpak_fail (error, _("Unexpected response status %d when requesting token: %s"), auth_msg->status_code, (char *)g_bytes_get_data (body, NULL));
+      return NULL;
+    }
+
+  json = json_from_string (body_data, error);
+  if (json == NULL)
+    return NULL;
+
+  token = object_get_string_member_with_default (json, "token", NULL);
+  if (token == NULL)
+    {
+      flatpak_fail (error, _("Invalid authentication request response"));
+      return NULL;
+    }
+
+  return g_strdup (token);
+}
+
+char *
+flatpak_oci_registry_get_token (FlatpakOciRegistry *self,
                                 const char         *repository,
-                                gboolean            manifest,
                                 const char         *digest,
+                                const char         *basic_auth,
                                 GCancellable       *cancellable,
                                 GError            **error)
 {
   g_autofree char *subpath = NULL;
+  g_autoptr(SoupURI) uri = NULL;
+  g_autoptr(GInputStream) stream = NULL;
+  g_autoptr(SoupMessage) msg = NULL;
+  g_autofree char *www_authenticate = NULL;
+  g_autofree char *token = NULL;
 
+  g_assert (self->valid);
+
+  subpath = get_digest_subpath (self, repository, TRUE, FALSE, digest, error);
+  if (subpath == NULL)
+    return NULL;
+
+  if (self->dfd != -1)
+    return g_strdup (""); // No tokens for local repos
+
+  uri = soup_uri_new_with_base (self->base_uri, subpath);
+  if (uri == NULL)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                   "Invalid relative url %s", subpath);
+      return NULL;
+    }
+
+  msg = soup_message_new_from_uri ("HEAD", uri);
+
+  soup_message_headers_replace (msg->request_headers, "Accept",
+                                FLATPAK_OCI_MEDIA_TYPE_IMAGE_MANIFEST ", " FLATPAK_DOCKER_MEDIA_TYPE_IMAGE_MANIFEST2);
+
+  stream = soup_session_send (self->soup_session, msg, NULL, error);
+  if (stream == NULL)
+    return NULL;
+
+  if (SOUP_STATUS_IS_SUCCESSFUL (msg->status_code))
+    {
+      return g_strdup ("");
+    }
+  else if (msg->status_code != SOUP_STATUS_UNAUTHORIZED)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Unexpected response status %d from repo", msg->status_code);
+      return NULL;
+    }
+
+  /* Need www-authenticated header */
+  www_authenticate = g_strdup (soup_message_headers_get_one (msg->response_headers, "WWW-Authenticate"));
+  if (www_authenticate == NULL)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Now WWW-Authenticate header from repo");
+      return NULL;
+    }
+
+  token = get_token_for_www_auth (self, repository, www_authenticate, basic_auth, cancellable, error);
+  if (token == NULL)
+    return NULL;
+
+  return g_steal_pointer (&token);
+}
+
+GBytes *
+flatpak_oci_registry_load_blob (FlatpakOciRegistry *self,
+                                const char         *repository,
+                                gboolean            manifest,
+                                const char         *digest, /* Note: Can be tag for remote registries */
+                                const char        **alt_uris,
+                                char              **out_content_type,
+                                GCancellable       *cancellable,
+                                GError            **error)
+{
+  g_autofree char *subpath = NULL;
   g_autoptr(GBytes) bytes = NULL;
   g_autofree char *json_checksum = NULL;
 
   g_assert (self->valid);
 
-  subpath = get_digest_subpath (self, repository, manifest, digest, error);
+  // Note: Allow tags here, means we have to check that its a digest before verifying below
+  subpath = get_digest_subpath (self, repository, manifest, TRUE, digest, error);
   if (subpath == NULL)
     return NULL;
 
-  bytes = flatpak_oci_registry_load_file (self, subpath, cancellable, error);
+  bytes = flatpak_oci_registry_load_file (self, subpath, alt_uris, out_content_type, cancellable, error);
   if (bytes == NULL)
     return NULL;
 
   json_checksum = g_compute_checksum_for_bytes (G_CHECKSUM_SHA256, bytes);
 
-  if (strcmp (json_checksum, digest + strlen ("sha256:")) != 0)
+  if (g_str_has_prefix (digest, "sha256:") &&
+      strcmp (json_checksum, digest + strlen ("sha256:")) != 0)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
                    "Checksum for digest %s is wrong (was %s)", digest, json_checksum);
@@ -943,21 +1225,45 @@ FlatpakOciVersioned *
 flatpak_oci_registry_load_versioned (FlatpakOciRegistry *self,
                                      const char         *repository,
                                      const char         *digest,
+                                     const char        **alt_uris,
                                      gsize              *out_size,
                                      GCancellable       *cancellable,
                                      GError            **error)
 {
   g_autoptr(GBytes) bytes = NULL;
+  g_autofree char *content_type = NULL;
 
   g_assert (self->valid);
 
-  bytes = flatpak_oci_registry_load_blob (self, repository, TRUE, digest, cancellable, error);
+  bytes = flatpak_oci_registry_load_blob (self, repository, TRUE, digest, alt_uris, &content_type, cancellable, error);
   if (bytes == NULL)
     return NULL;
 
   if (out_size)
     *out_size = g_bytes_get_size (bytes);
-  return flatpak_oci_versioned_from_json (bytes, error);
+  return flatpak_oci_versioned_from_json (bytes, content_type, error);
+}
+
+FlatpakOciImage *
+flatpak_oci_registry_load_image_config (FlatpakOciRegistry *self,
+                                        const char         *repository,
+                                        const char         *digest,
+                                        const char        **alt_uris,
+                                        gsize              *out_size,
+                                        GCancellable       *cancellable,
+                                        GError            **error)
+{
+  g_autoptr(GBytes) bytes = NULL;
+
+  g_assert (self->valid);
+
+  bytes = flatpak_oci_registry_load_blob (self, repository, FALSE, digest, alt_uris, NULL, cancellable, error);
+  if (bytes == NULL)
+    return NULL;
+
+  if (out_size)
+    *out_size = g_bytes_get_size (bytes);
+  return flatpak_oci_image_from_json (bytes, error);
 }
 
 struct FlatpakOciLayerWriter
@@ -1031,7 +1337,6 @@ flatpak_oci_layer_writer_class_init (FlatpakOciLayerWriterClass *klass)
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
 
   object_class->finalize = flatpak_oci_layer_writer_finalize;
-
 }
 
 static void
@@ -1058,7 +1363,6 @@ flatpak_oci_layer_writer_compress (FlatpakOciLayerWriter *self,
   GConverterResult res;
   gsize total_bytes_read, bytes_read, bytes_written, to_write_len;
   guchar *to_write;
-
   g_autoptr(GError) local_error = NULL;
   GConverterFlags flags = 0;
   bytes_read = 0;
@@ -1090,8 +1394,8 @@ flatpak_oci_layer_writer_compress (FlatpakOciLayerWriter *self,
       to_write = compressed_buffer;
       while (to_write_len > 0)
         {
-          ssize_t res = write (self->tmpf.fd, to_write, to_write_len);
-          if (res <= 0)
+          ssize_t result = write (self->tmpf.fd, to_write, to_write_len);
+          if (result <= 0)
             {
               if (errno == EINTR)
                 continue;
@@ -1099,8 +1403,8 @@ flatpak_oci_layer_writer_compress (FlatpakOciLayerWriter *self,
               return -1;
             }
 
-          to_write_len -= res;
-          to_write += res;
+          to_write_len -= result;
+          to_write += result;
         }
 
       total_bytes_read += bytes_read;
@@ -1244,6 +1548,7 @@ typedef struct
   int        fd;
   GChecksum *checksum;
   char       buffer[16 * 1024];
+  gboolean   at_end;
 } FlatpakArchiveReadWithChecksum;
 
 static int
@@ -1251,7 +1556,6 @@ checksum_open_cb (struct archive *a, void *user_data)
 {
   return ARCHIVE_OK;
 }
-
 
 static ssize_t
 checksum_read_cb (struct archive *a, void *user_data, const void **buff)
@@ -1263,6 +1567,9 @@ checksum_read_cb (struct archive *a, void *user_data, const void **buff)
   do
     bytes_read = read (data->fd, &data->buffer, sizeof (data->buffer));
   while (G_UNLIKELY (bytes_read == -1 && errno == EINTR));
+
+  if (bytes_read <= 0)
+    data->at_end = TRUE; /* Failed or eof */
 
   if (bytes_read < 0)
     {
@@ -1294,6 +1601,23 @@ checksum_close_cb (struct archive *a, void *user_data)
 {
   FlatpakArchiveReadWithChecksum *data = user_data;
 
+  /* Checksum to the end to ensure we got everything, even if libarchive didn't read it all */
+  if (!data->at_end)
+    {
+      while (TRUE)
+        {
+          ssize_t bytes_read;
+          do
+            bytes_read = read (data->fd, &data->buffer, sizeof (data->buffer));
+          while (G_UNLIKELY (bytes_read == -1 && errno == EINTR));
+
+          if (bytes_read > 0)
+            g_checksum_update (data->checksum, (guchar *) data->buffer, bytes_read);
+          else
+            break;
+        }
+    }
+
   g_free (data);
 
   return ARCHIVE_OK;
@@ -1318,6 +1642,457 @@ flatpak_archive_read_open_fd_with_checksum (struct archive *a,
     return propagate_libarchive_error (error, a);
 
   return TRUE;
+}
+
+enum {
+      DELTA_OP_DATA = 0,
+      DELTA_OP_OPEN = 1,
+      DELTA_OP_COPY = 2,
+      DELTA_OP_ADD_DATA = 3,
+      DELTA_OP_SEEK = 4,
+};
+
+#define DELTA_HEADER "tardf1\n\0"
+#define DELTA_HEADER_LEN 8
+
+#define DELTA_BUFFER_SIZE (64*1024)
+
+static gboolean
+delta_read_byte (GInputStream   *in,
+                 guint8         *out,
+                 gboolean       *eof,
+                 GCancellable   *cancellable,
+                 GError        **error)
+{
+  gssize res = g_input_stream_read (in, out, 1, cancellable, error);
+
+  if (eof)
+    *eof = FALSE;
+
+  if (res < 0)
+    return FALSE;
+
+  if (res == 0)
+    {
+      if (eof)
+        *eof = TRUE;
+      return flatpak_fail (error, _("Invalid delta file format"));
+    }
+
+  return TRUE;
+}
+
+
+static gboolean
+delta_read_varuint (GInputStream   *in,
+                    guint64        *out,
+                    GCancellable   *cancellable,
+                    GError        **error)
+{
+  guint64 res = 0;
+  guint32 index = 0;
+  gboolean more_data;
+
+  do
+    {
+      guchar byte;
+      guint64 data;
+
+      if (!delta_read_byte (in, &byte, NULL, cancellable, error))
+        return FALSE;
+
+      data = byte & 0x7f;
+      res |= data << index;
+      index += 7;
+
+      more_data = (byte & 0x80) != 0;
+    }
+  while (more_data);
+
+  *out = res;
+  return TRUE;
+}
+
+static gboolean
+delta_copy_data (GInputStream   *in,
+                 GOutputStream  *out,
+                 guint64         size,
+                 guchar         *buffer,
+                 GCancellable   *cancellable,
+                 GError        **error)
+{
+  while (size > 0)
+    {
+      gssize n_read = g_input_stream_read (in, buffer, MIN(size, DELTA_BUFFER_SIZE), cancellable, error);
+
+      if (n_read == -1)
+        return FALSE;
+
+      if (n_read == 0)
+        return flatpak_fail (error, _("Invalid delta file format"));
+
+      if (!g_output_stream_write_all (out, buffer, n_read, NULL, cancellable, error))
+        return FALSE;
+
+      size -= n_read;
+    }
+
+  return TRUE;
+}
+
+static gboolean
+delta_add_data (GInputStream   *in1,
+                GInputStream   *in2,
+                GOutputStream  *out,
+                guint64         size,
+                guchar         *buffer1,
+                guchar         *buffer2,
+                GCancellable   *cancellable,
+                GError        **error)
+{
+  while (size > 0)
+    {
+      gssize i;
+      gssize n_read = g_input_stream_read (in1, buffer1, MIN(size, DELTA_BUFFER_SIZE), cancellable, error);
+
+      if (n_read == -1)
+        return FALSE;
+      if (n_read == 0)
+        return flatpak_fail (error, _("Invalid delta file format"));
+
+      if (!g_input_stream_read_all (in2, buffer2, n_read, NULL, cancellable, error))
+        return FALSE;
+
+      for (i = 0; i < n_read; i++)
+        buffer1[i] = ((guint32)buffer1[i] + (guint32)buffer2[i]) & 0xff;
+
+      if (!g_output_stream_write_all (out, buffer1, n_read, NULL, cancellable, error))
+        return FALSE;
+
+      size -= n_read;
+    }
+
+  return TRUE;
+}
+
+static guchar *
+delta_read_data (GInputStream   *in,
+                 guint64         size,
+                 GCancellable   *cancellable,
+                 GError        **error)
+{
+  g_autofree guchar *buf = g_malloc (size+1);
+
+  if (!g_input_stream_read_all (in, buf, size, NULL, cancellable, error))
+    return NULL;
+
+  buf[size] = 0;
+  return g_steal_pointer (&buf);
+}
+
+static char *
+delta_clean_path (const char *path)
+{
+  g_autofree char *abs_path = NULL;
+  g_autofree char *canonical_path = NULL;
+  const char *rel_canonical_path = NULL;
+
+  /* Canonicallize this as if it was absolute (to avoid ever going out of the top dir) */
+  abs_path = g_strconcat ("/", path, NULL);
+  canonical_path = flatpak_canonicalize_filename (abs_path);
+
+  /* Then convert back to relative */
+  rel_canonical_path = canonical_path;
+  while (*rel_canonical_path == '/')
+    rel_canonical_path++;
+  return g_strdup (rel_canonical_path);
+}
+
+static gboolean
+delta_ensure_file (GFileInputStream *content_file,
+                   GError          **error)
+{
+  if (content_file == NULL)
+    return flatpak_fail (error, _("Invalid delta file format"));
+  return TRUE;
+}
+
+static GFileInputStream *
+copy_stream_to_file (FlatpakOciRegistry    *self,
+                     GInputStream          *in,
+                     GCancellable          *cancellable,
+                     GError               **error)
+{
+  g_autofree char *tmpfile_name = g_strdup_printf ("oci-delta-source-XXXXXX");
+  g_autoptr(GOutputStream) tmp_out_stream = NULL;
+  g_autofree char *proc_pid_path = NULL;
+  g_autoptr(GFile) proc_pid_file = NULL;
+  g_autoptr(GFileInputStream) res = NULL;
+
+  if (!flatpak_open_in_tmpdir_at (self->tmp_dfd, 0600, tmpfile_name,
+                                  &tmp_out_stream, cancellable, error))
+    return NULL;
+
+  (void) unlinkat (self->tmp_dfd, tmpfile_name, 0);
+
+  proc_pid_path = g_strdup_printf ("/proc/self/fd/%d", g_unix_output_stream_get_fd (G_UNIX_OUTPUT_STREAM (tmp_out_stream)));
+  proc_pid_file = g_file_new_for_path (proc_pid_path);
+  res = g_file_read (proc_pid_file, cancellable, error);
+  if (res == NULL)
+    return NULL;
+
+  if (g_output_stream_splice (tmp_out_stream, in,
+                              G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET,
+                              cancellable, error) < 0)
+    return NULL;
+
+  return g_steal_pointer (&res);
+}
+
+static gboolean
+flatpak_oci_registry_apply_delta_stream (FlatpakOciRegistry    *self,
+                                         int                    delta_fd,
+                                         GFile                 *content_dir,
+                                         GOutputStream         *out,
+                                         GCancellable          *cancellable,
+                                         GError               **error)
+{
+  g_autoptr(GInputStream) in_raw = g_unix_input_stream_new (delta_fd, FALSE);
+  g_autoptr(GInputStream) in = NULL;
+  FlatpakZstdDecompressor *zstd;
+  char header[8];
+  g_autofree guchar *buffer1 = g_malloc (DELTA_BUFFER_SIZE);
+  g_autofree guchar *buffer2 = g_malloc (DELTA_BUFFER_SIZE);
+  g_autoptr(GFileInputStream) content_file = NULL;
+
+  if (!g_input_stream_read_all (in_raw, header, sizeof(header), NULL, cancellable, error))
+    return FALSE;
+
+  if (memcmp (header, DELTA_HEADER, DELTA_HEADER_LEN) != 0)
+    return flatpak_fail (error, _("Invalid delta file format"));
+
+  zstd = flatpak_zstd_decompressor_new ();
+  in = g_converter_input_stream_new (in_raw, G_CONVERTER (zstd));
+  g_object_unref (zstd);
+
+  while (TRUE)
+    {
+      guint8 op;
+      guint64 size;
+      g_autofree char *path = NULL;
+      g_autofree char *clean_path = NULL;
+      g_autoptr(GError) local_error = NULL;
+      gboolean eof;
+
+      if (!delta_read_byte (in, &op, &eof, cancellable, &local_error))
+        {
+          if (eof)
+            break;
+          g_propagate_error (error, g_steal_pointer (&local_error));
+          return FALSE;
+        }
+
+      if (!delta_read_varuint (in, &size, cancellable, error))
+        return FALSE;
+
+      switch (op)
+        {
+        case DELTA_OP_DATA:
+          if (!delta_copy_data (in, out, size, buffer1, cancellable, error))
+            return FALSE;
+          break;
+
+        case DELTA_OP_OPEN:
+          path = (char *)delta_read_data (in, size, cancellable, error);
+          if (path == NULL)
+            return FALSE;
+          clean_path = delta_clean_path (path);
+
+          g_clear_object (&content_file);
+
+          {
+            g_autoptr(GFile) child = g_file_resolve_relative_path (content_dir, clean_path);
+            g_autoptr(GFileInputStream) child_in = NULL;
+
+            child_in = g_file_read (child, cancellable, error);
+            if (child_in == NULL)
+              return FALSE;
+
+            /* We can't seek in the ostree repo file, so copy it to temp file */
+            content_file = copy_stream_to_file (self, G_INPUT_STREAM (child_in), cancellable, error);
+            if (content_file == NULL)
+              return FALSE;
+          }
+          break;
+
+        case DELTA_OP_COPY:
+          if (!delta_ensure_file (content_file, error))
+            return FALSE;
+          if (!delta_copy_data (G_INPUT_STREAM (content_file), out, size, buffer1, cancellable, error))
+            return FALSE;
+          break;
+
+        case DELTA_OP_ADD_DATA:
+          if (!delta_ensure_file (content_file, error))
+            return FALSE;
+          if (!delta_add_data (G_INPUT_STREAM (content_file), in, out, size, buffer1, buffer2, cancellable, error))
+            return FALSE;
+          break;
+
+        case DELTA_OP_SEEK:
+          if (!delta_ensure_file (content_file, error))
+            return FALSE;
+          if (!g_seekable_seek (G_SEEKABLE (content_file), size, G_SEEK_SET, cancellable, error))
+            return FALSE;
+          break;
+
+        default:
+          return flatpak_fail (error, _("Invalid delta file format"));
+        }
+    }
+
+  return TRUE;
+}
+
+int
+flatpak_oci_registry_apply_delta (FlatpakOciRegistry    *self,
+                                  int                    delta_fd,
+                                  GFile                 *content_dir,
+                                  GCancellable          *cancellable,
+                                  GError               **error)
+{
+  g_autoptr(GOutputStream) out = NULL;
+  g_autofree char *tmpfile_name = g_strdup_printf ("oci-delta-layer-XXXXXX");
+  glnx_autofd int fd = -1;
+
+  if (!flatpak_open_in_tmpdir_at (self->tmp_dfd, 0600, tmpfile_name,
+                                  &out, cancellable, error))
+    return -1;
+
+  // This is the read-only version we return
+  // Note: that we need to open this before we unlink it
+  fd = local_open_file (self->tmp_dfd, tmpfile_name, NULL, cancellable, error);
+  (void) unlinkat (self->tmp_dfd, tmpfile_name, 0);
+  if (fd == -1)
+    return -1;
+
+  if (!flatpak_oci_registry_apply_delta_stream (self, delta_fd, content_dir, out, cancellable, error))
+    return -1;
+
+  return glnx_steal_fd (&fd);
+}
+
+char *
+flatpak_oci_registry_apply_delta_to_blob (FlatpakOciRegistry    *self,
+                                          int                    delta_fd,
+                                          GFile                 *content_dir,
+                                          GCancellable          *cancellable,
+                                          GError               **error)
+{
+  g_autofree char *dst_subpath = NULL;
+  g_autofree char *checksum = NULL;
+  g_autofree char *digest = NULL;
+  g_auto(GLnxTmpfile) tmpf = { 0 };
+  g_autoptr(GOutputStream) out = NULL;
+
+  if (!glnx_open_tmpfile_linkable_at (self->dfd, "blobs/sha256",
+                                      O_RDWR | O_CLOEXEC | O_NOCTTY,
+                                      &tmpf, error))
+    return NULL;
+
+  out = g_unix_output_stream_new (tmpf.fd, FALSE);
+
+  if (!flatpak_oci_registry_apply_delta_stream (self, delta_fd, content_dir, out, cancellable, error))
+    return NULL;
+
+  /* Seek to start to get checksum */
+  lseek (tmpf.fd, 0, SEEK_SET);
+
+  checksum = checksum_fd (tmpf.fd, cancellable, error);
+  if (checksum == NULL)
+    return FALSE;
+
+  digest = g_strconcat ("sha256:", checksum, NULL);
+
+  dst_subpath = get_digest_subpath (self, NULL, FALSE, FALSE, digest, error);
+  if (dst_subpath == NULL)
+    return FALSE;
+
+  if (!glnx_link_tmpfile_at (&tmpf,
+                             GLNX_LINK_TMPFILE_NOREPLACE_IGNORE_EXIST,
+                             self->dfd, dst_subpath,
+                             error))
+    return FALSE;
+
+  return g_steal_pointer (&digest);
+}
+
+FlatpakOciManifest *
+flatpak_oci_registry_find_delta_manifest (FlatpakOciRegistry    *registry,
+                                          const char            *oci_repository,
+                                          const char            *for_digest,
+                                          const char            *delta_manifest_url,
+                                          GCancellable          *cancellable)
+{
+  g_autoptr(FlatpakOciVersioned) deltaindexv = NULL;
+  FlatpakOciDescriptor *delta_desc;
+
+#ifndef HAVE_ZSTD
+  if (TRUE)
+    return NULL; /* Don't find deltas if we can't apply them */
+#endif
+
+  if (delta_manifest_url != NULL)
+    {
+      g_autoptr(SoupURI) soup_uri = soup_uri_new_with_base (registry->base_uri, delta_manifest_url);
+      g_autofree char *uri_s = soup_uri_to_string (soup_uri, FALSE);
+
+      g_autoptr(GBytes) bytes = flatpak_load_uri (registry->soup_session,
+                                                  uri_s, FLATPAK_HTTP_FLAGS_ACCEPT_OCI,
+                                                  registry->token,
+                                                  NULL, NULL, NULL,
+                                                  cancellable, NULL);
+      if (bytes != NULL)
+        {
+          g_autoptr(FlatpakOciVersioned) versioned =
+            flatpak_oci_versioned_from_json (bytes, FLATPAK_OCI_MEDIA_TYPE_IMAGE_MANIFEST, NULL);
+
+          if (versioned != NULL && G_TYPE_CHECK_INSTANCE_TYPE (versioned, FLATPAK_TYPE_OCI_MANIFEST))
+            {
+              g_autoptr(FlatpakOciManifest) delta_manifest = (FlatpakOciManifest *)g_steal_pointer (&versioned);
+
+              /* We resolved using a mutable location (not via digest), so ensure its still valid for this target */
+              if (delta_manifest->annotations)
+                {
+                  const char *target = g_hash_table_lookup (delta_manifest->annotations, "io.github.containers.delta.target");
+                  if (g_strcmp0 (target, for_digest) == 0)
+                    return g_steal_pointer (&delta_manifest);
+                }
+            }
+        }
+    }
+
+  deltaindexv = flatpak_oci_registry_load_versioned (registry, oci_repository, "_deltaindex",
+                                                     NULL, NULL, cancellable, NULL);
+  if (deltaindexv == NULL)
+    return NULL;
+
+  if (!G_TYPE_CHECK_INSTANCE_TYPE (deltaindexv, FLATPAK_TYPE_OCI_INDEX))
+    return NULL;
+
+  delta_desc = flatpak_oci_index_find_delta_for ((FlatpakOciIndex *)deltaindexv, for_digest);
+  if (delta_desc && delta_desc->digest != NULL)
+    {
+      const char *delta_manifest_digest = delta_desc->digest;
+      g_autoptr(FlatpakOciVersioned) deltamanifest = NULL;
+
+      deltamanifest = flatpak_oci_registry_load_versioned (registry, oci_repository, delta_manifest_digest,
+                                                           (const char **)delta_desc->urls, NULL, cancellable, NULL);
+      if (deltamanifest != NULL && G_TYPE_CHECK_INSTANCE_TYPE (deltamanifest, FLATPAK_TYPE_OCI_MANIFEST))
+        return (FlatpakOciManifest *)g_steal_pointer (&deltamanifest);
+    }
+
+  return NULL;
 }
 
 G_DEFINE_AUTO_CLEANUP_FREE_FUNC (gpgme_data_t, gpgme_data_release, NULL)
@@ -1613,7 +2388,6 @@ flatpak_gpgme_new_ctx (const char *homedir,
                        GError    **error)
 {
   gpgme_error_t err;
-
   g_auto(gpgme_ctx_t) context = NULL;
 
   if ((err = gpgme_new (&context)) != GPG_ERR_NO_ERROR)
@@ -1777,7 +2551,6 @@ flatpak_gpgme_ctx_tmp_home_dir (gpgme_ctx_t   gpgme_ctx,
 {
   g_autofree char *tmp_home_dir_pattern = NULL;
   gpgme_error_t gpg_error;
-
   g_autoptr(GFile) keyring_file = NULL;
   g_autofree char *keyring_name = NULL;
 
@@ -1827,7 +2600,6 @@ flatpak_oci_verify_signature (OstreeRepo *repo,
 {
   gpgme_ctx_t context;
   gpgme_error_t gpg_error;
-
   g_auto(gpgme_data_t) signed_data_buffer = NULL;
   g_auto(gpgme_data_t) plain_buffer = NULL;
   gpgme_verify_result_t vresult;
@@ -1904,9 +2676,22 @@ flatpak_oci_verify_signature (OstreeRepo *repo,
 }
 
 static const char *
+get_image_metadata (FlatpakOciIndexImage *img, const char *key)
+{
+  if (img->labels != NULL)
+    {
+      const char *ref = g_hash_table_lookup (img->labels, key);
+      if (ref)
+        return ref;
+    }
+  return NULL;
+}
+
+
+static const char *
 get_image_ref (FlatpakOciIndexImage *img)
 {
-  return g_hash_table_lookup (img->annotations, "org.flatpak.ref");
+  return get_image_metadata (img, "org.flatpak.ref");
 }
 
 typedef struct
@@ -1981,6 +2766,7 @@ flatpak_oci_index_ensure_cached (SoupSession  *soup_session,
       g_clear_pointer (&tag, g_free);
       tag = g_strdup ("latest");
     }
+
   soup_uri_set_fragment (base_uri, NULL);
 
   query_uri = soup_uri_copy (base_uri);
@@ -1988,7 +2774,7 @@ flatpak_oci_index_ensure_cached (SoupSession  *soup_session,
   oci_arch = flatpak_arch_to_oci_arch (flatpak_get_arch ());
 
   soup_uri_set_query_from_fields (query_uri,
-                                  "annotation:org.flatpak.ref:exists", "1",
+                                  "label:org.flatpak.ref:exists", "1",
                                   "architecture", oci_arch,
                                   "os", "linux",
                                   "tag", tag,
@@ -2003,7 +2789,7 @@ flatpak_oci_index_ensure_cached (SoupSession  *soup_session,
                                     cancellable, &local_error);
 
   if (success ||
-      g_error_matches (local_error, FLATPAK_OCI_ERROR, FLATPAK_OCI_ERROR_NOT_CHANGED))
+      g_error_matches (local_error, FLATPAK_HTTP_ERROR, FLATPAK_HTTP_ERROR_NOT_CHANGED))
     {
       if (index_uri_out)
         *index_uri_out = soup_uri_to_string (base_uri, FALSE);
@@ -2049,6 +2835,21 @@ load_oci_index (GFile        *index,
   return (FlatpakOciIndexResponse *) g_steal_pointer (&json);
 }
 
+static GVariant *
+maybe_variant_from_base64 (const char *base64)
+{
+  guchar *bin;
+  gsize bin_len;
+
+  if (base64 == NULL)
+    return NULL;
+
+  bin = g_base64_decode (base64, &bin_len);
+  return g_variant_ref_sink (g_variant_new_from_data (G_VARIANT_TYPE ("v"),
+                                                      bin, bin_len, FALSE,
+                                                      g_free, bin));
+}
+
 GVariant *
 flatpak_oci_index_make_summary (GFile        *index,
                                 const char   *index_uri,
@@ -2062,6 +2863,7 @@ flatpak_oci_index_make_summary (GFile        *index,
   g_autoptr(GArray) images = g_array_new (FALSE, TRUE, sizeof (ImageInfo));
   g_autoptr(GVariantBuilder) refs_builder = NULL;
   g_autoptr(GVariantBuilder) additional_metadata_builder = NULL;
+  g_autoptr(GVariantBuilder) ref_sparse_data_builder = NULL;
   g_autoptr(GVariantBuilder) summary_builder = NULL;
   g_autoptr(GVariant) summary = NULL;
   g_autoptr(GVariantBuilder) ref_data_builder = NULL;
@@ -2103,6 +2905,7 @@ flatpak_oci_index_make_summary (GFile        *index,
   refs_builder = g_variant_builder_new (G_VARIANT_TYPE ("a(s(taya{sv}))"));
   ref_data_builder = g_variant_builder_new (G_VARIANT_TYPE ("a{s(tts)}"));
   additional_metadata_builder = g_variant_builder_new (G_VARIANT_TYPE ("a{sv}"));
+  ref_sparse_data_builder = g_variant_builder_new (G_VARIANT_TYPE ("a{sa{sv}}"));
 
   /* The summary has to be sorted by ref */
   g_array_sort (images, (GCompareFunc) compare_image_by_ref);
@@ -2115,15 +2918,22 @@ flatpak_oci_index_make_summary (GFile        *index,
       const char *fake_commit;
       guint64 installed_size = 0;
       guint64 download_size = 0;
+      const char *delta_url;
       const char *installed_size_str;
       const char *download_size_str;
+      const char *token_type_base64;
+      const char *endoflife_base64;
+      const char *endoflife_rebase_base64 = NULL;
       const char *metadata_contents = NULL;
       g_autoptr(GVariantBuilder) ref_metadata_builder = NULL;
+      g_autoptr(GVariant) token_type_v = NULL;
+      g_autoptr(GVariant) endoflife_v = NULL;
+      g_autoptr(GVariant) endoflife_rebase_v = NULL;
 
       if (ref == NULL)
         continue;
 
-      metadata_contents = g_hash_table_lookup (image->annotations, "org.flatpak.metadata");
+      metadata_contents = get_image_metadata (image, "org.flatpak.metadata");
       if (metadata_contents == NULL && !g_str_has_prefix (ref, "appstream/"))
         continue; /* Not a flatpak, skip */
 
@@ -2135,11 +2945,11 @@ flatpak_oci_index_make_summary (GFile        *index,
 
       fake_commit = image->digest + strlen ("sha256:");
 
-      installed_size_str = g_hash_table_lookup (image->annotations, "org.flatpak.installed-size");
+      installed_size_str = get_image_metadata (image, "org.flatpak.installed-size");
       if (installed_size_str)
         installed_size = g_ascii_strtoull (installed_size_str, NULL, 10);
 
-      download_size_str = g_hash_table_lookup (image->annotations, "org.flatpak.download-size");
+      download_size_str = get_image_metadata (image, "org.flatpak.download-size");
       if (download_size_str)
         download_size = g_ascii_strtoull (download_size_str, NULL, 10);
 
@@ -2148,9 +2958,14 @@ flatpak_oci_index_make_summary (GFile        *index,
       g_variant_builder_add (ref_metadata_builder, "{sv}", "xa.oci-repository",
                              g_variant_new_string (info->repository));
 
+      delta_url = get_image_metadata (image, "io.github.containers.DeltaUrl");
+      if (delta_url)
+        g_variant_builder_add (ref_metadata_builder, "{sv}", "xa.delta-url",
+                               g_variant_new_string (delta_url));
+
       g_variant_builder_add_value (refs_builder,
                                    g_variant_new ("(s(t@ay@a{sv}))", ref,
-                                                  (guint64)0,
+                                                  (guint64) 0,
                                                   ostree_checksum_to_bytes_v (fake_commit),
                                                   g_variant_builder_end (ref_metadata_builder)));
       g_variant_builder_add (ref_data_builder, "{s(tts)}",
@@ -2158,10 +2973,36 @@ flatpak_oci_index_make_summary (GFile        *index,
                              GUINT64_TO_BE (installed_size),
                              GUINT64_TO_BE (download_size),
                              metadata_contents ? metadata_contents : "");
+
+      token_type_base64 = get_image_metadata (image, "org.flatpak.commit-metadata.xa.token-type");
+      token_type_v = maybe_variant_from_base64 (token_type_base64);
+      endoflife_base64 = get_image_metadata (image, "org.flatpak.commit-metadata.ostree.endoflife");
+      endoflife_v = maybe_variant_from_base64 (endoflife_base64);
+      endoflife_rebase_base64 = get_image_metadata (image, "org.flatpak.commit-metadata.ostree.endoflife-rebase");
+      endoflife_rebase_v = maybe_variant_from_base64 (endoflife_rebase_base64);
+
+      if (token_type_v != NULL ||
+          endoflife_v != NULL ||
+          endoflife_rebase_v != NULL)
+        {
+          g_autoptr(GVariantBuilder) sparse_builder = g_variant_builder_new (G_VARIANT_TYPE ("a{sv}"));
+
+          if (token_type_v != NULL)
+            g_variant_builder_add (sparse_builder, "{s@v}", FLATPAK_SPARSE_CACHE_KEY_TOKEN_TYPE, token_type_v);
+          if (endoflife_v != NULL)
+            g_variant_builder_add (sparse_builder, "{s@v}", FLATPAK_SPARSE_CACHE_KEY_ENDOFLINE, endoflife_v);
+          if (endoflife_rebase_v != NULL)
+            g_variant_builder_add (sparse_builder, "{s@v}", FLATPAK_SPARSE_CACHE_KEY_ENDOFLINE_REBASE, endoflife_rebase_v);
+
+          g_variant_builder_add (ref_sparse_data_builder, "{s@a{sv}}",
+                                 ref, g_variant_builder_end (sparse_builder));
+        }
     }
 
   g_variant_builder_add (additional_metadata_builder, "{sv}", "xa.cache",
                          g_variant_new_variant (g_variant_builder_end (ref_data_builder)));
+  g_variant_builder_add (additional_metadata_builder, "{sv}", "xa.sparse-cache",
+                         g_variant_builder_end (ref_sparse_data_builder));
   g_variant_builder_add (additional_metadata_builder, "{sv}", "xa.oci-registry-uri",
                          g_variant_new_string (registry_uri_s));
 
@@ -2230,7 +3071,7 @@ add_icon_image (SoupSession  *soup_session,
                                    icons_dfd, icon_path,
                                    NULL, NULL,
                                    cancellable, &local_error) &&
-          !g_error_matches (local_error, FLATPAK_OCI_ERROR, FLATPAK_OCI_ERROR_NOT_CHANGED))
+          !g_error_matches (local_error, FLATPAK_HTTP_ERROR, FLATPAK_HTTP_ERROR_NOT_CHANGED))
         {
           g_propagate_error (error, g_steal_pointer (&local_error));
           return FALSE;
@@ -2267,24 +3108,25 @@ add_image_to_appstream (SoupSession               *soup_session,
 
   static struct
   {
-    const char *annotation;
+    const char *label;
     const char *subdir;
   } icon_sizes[] = {
     { "org.freedesktop.appstream.icon-64", "64x64" },
     { "org.freedesktop.appstream.icon-128", "128x128" },
   };
 
-  ref = g_hash_table_lookup (image->annotations, "org.flatpak.ref");
+  ref = get_image_ref (image);
   if (!ref)
     return;
 
   ref_parts = g_strsplit (ref, "/", -1);
-  if (g_strv_length (ref_parts) != 4 || strcmp (ref_parts[0], "app") != 0)
+  if (g_strv_length (ref_parts) != 4 ||
+      (strcmp (ref_parts[0], "app") != 0 && strcmp (ref_parts[0], "runtime") != 0))
     return;
 
   id = ref_parts[1];
 
-  appdata = g_hash_table_lookup (image->annotations, "org.freedesktop.appstream.appdata");
+  appdata = get_image_metadata (image, "org.freedesktop.appstream.appdata");
   if (!appdata)
     return;
 
@@ -2330,8 +3172,7 @@ add_image_to_appstream (SoupSession               *soup_session,
 
   for (i = 0; i < G_N_ELEMENTS (icon_sizes); i++)
     {
-      const char *icon_data = g_hash_table_lookup (image->annotations,
-                                                   icon_sizes[i].annotation);
+      const char *icon_data = get_image_metadata (image, icon_sizes[i].label);
       if (icon_data)
         {
           if (!add_icon_image (soup_session,
@@ -2359,7 +3200,7 @@ clean_unused_icons_recurse (int           icons_dfd,
                             GCancellable *cancellable,
                             GError      **error)
 {
-  GLnxDirFdIterator iter = { 0, };
+  g_auto(GLnxDirFdIterator) iter = { 0, };
   gboolean any_found = FALSE;
 
   if (!glnx_dirfd_iterator_init_at (icons_dfd,

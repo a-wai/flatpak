@@ -41,12 +41,15 @@ typedef enum {
   FLATPAK_CONTEXT_SOCKET_SYSTEM_BUS  = 1 << 4,
   FLATPAK_CONTEXT_SOCKET_FALLBACK_X11 = 1 << 5, /* For backwards compat, also set SOCKET_X11 */
   FLATPAK_CONTEXT_SOCKET_SSH_AUTH    = 1 << 6,
+  FLATPAK_CONTEXT_SOCKET_PCSC        = 1 << 7,
+  FLATPAK_CONTEXT_SOCKET_CUPS        = 1 << 8,
 } FlatpakContextSockets;
 
 typedef enum {
   FLATPAK_CONTEXT_DEVICE_DRI         = 1 << 0,
   FLATPAK_CONTEXT_DEVICE_ALL         = 1 << 1,
   FLATPAK_CONTEXT_DEVICE_KVM         = 1 << 2,
+  FLATPAK_CONTEXT_DEVICE_SHM         = 1 << 3,
 } FlatpakContextDevices;
 
 typedef enum {
@@ -79,6 +82,11 @@ extern const char *flatpak_context_devices[];
 extern const char *flatpak_context_features[];
 extern const char *flatpak_context_shares[];
 
+gboolean       flatpak_context_parse_filesystem (const char             *filesystem_and_mode,
+                                                 char                  **filesystem_out,
+                                                 FlatpakFilesystemMode  *mode_out,
+                                                 GError                **error);
+
 FlatpakContext *flatpak_context_new (void);
 void           flatpak_context_free (FlatpakContext *context);
 void           flatpak_context_merge (FlatpakContext *context,
@@ -105,10 +113,13 @@ FlatpakRunFlags flatpak_context_get_run_flags (FlatpakContext *context);
 void           flatpak_context_add_bus_filters (FlatpakContext *context,
                                                 const char     *app_id,
                                                 gboolean        session_bus,
+                                                gboolean        sandboxed,
                                                 FlatpakBwrap   *bwrap);
 
 gboolean       flatpak_context_get_needs_session_bus_proxy (FlatpakContext *context);
 gboolean       flatpak_context_get_needs_system_bus_proxy (FlatpakContext *context);
+gboolean       flatpak_context_adds_permissions (FlatpakContext *old_context,
+                                                 FlatpakContext *new_context);
 
 void           flatpak_context_reset_permissions (FlatpakContext *context);
 void           flatpak_context_reset_non_permissions (FlatpakContext *context);
@@ -127,6 +138,7 @@ void flatpak_context_append_bwrap_filesystem (FlatpakContext  *context,
                                               FlatpakBwrap    *bwrap,
                                               const char      *app_id,
                                               GFile           *app_id_dir,
+                                              GPtrArray       *extra_app_id_dirs,
                                               FlatpakExports **exports_out);
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (FlatpakContext, flatpak_context_free)

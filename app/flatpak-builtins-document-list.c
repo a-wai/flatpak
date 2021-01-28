@@ -53,10 +53,10 @@ static Column all_columns[] = {
 };
 
 static gboolean
-print_documents (const char *app_id,
-                 Column *columns,
+print_documents (const char   *app_id,
+                 Column       *columns,
                  GCancellable *cancellable,
-                 GError **error)
+                 GError      **error)
 {
   g_autoptr(GDBusConnection) session_bus = NULL;
   XdpDbusDocuments *documents;
@@ -91,7 +91,7 @@ print_documents (const char *app_id,
     return FALSE;
 
   printer = flatpak_table_printer_new ();
-  flatpak_table_printer_set_columns (printer, columns);
+  flatpak_table_printer_set_columns (printer, columns, opt_cols == NULL);
   for (i = 0; columns[i].name; i++)
     {
       if (strcmp (columns[i].name, "permissions") == 0 ||
@@ -129,7 +129,7 @@ print_documents (const char *app_id,
                 {
                   g_autofree char *value = NULL;
                   if (perms)
-                    value = g_strjoinv (" ", (char **)perms);
+                    value = g_strjoinv (" ", (char **) perms);
                   flatpak_table_printer_add_column (printer, value);
                 }
               else if (just_perms)
@@ -198,7 +198,6 @@ flatpak_complete_document_list (FlatpakCompletion *completion)
   g_autoptr(FlatpakDir) user_dir = NULL;
   g_autoptr(FlatpakDir) system_dir = NULL;
   g_autoptr(GError) error = NULL;
-  int i;
 
   context = g_option_context_new ("");
 
@@ -216,34 +215,26 @@ flatpak_complete_document_list (FlatpakCompletion *completion)
 
       user_dir = flatpak_dir_get_user ();
       {
-        g_auto(GStrv) refs = flatpak_dir_find_installed_refs (user_dir, NULL, NULL, NULL,
-                                                              FLATPAK_KINDS_APP,
-                                                              FIND_MATCHING_REFS_FLAGS_NONE,
-                                                              &error);
+        g_autoptr(GPtrArray) refs = flatpak_dir_find_installed_refs (user_dir, NULL, NULL, NULL,
+                                                                     FLATPAK_KINDS_APP,
+                                                                     FIND_MATCHING_REFS_FLAGS_NONE,
+                                                                     &error);
         if (refs == NULL)
           flatpak_completion_debug ("find local refs error: %s", error->message);
-        for (i = 0; refs != NULL && refs[i] != NULL; i++)
-          {
-            g_auto(GStrv) parts = flatpak_decompose_ref (refs[i], NULL);
-            if (parts)
-              flatpak_complete_word (completion, "%s ", parts[1]);
-          }
+
+        flatpak_complete_ref_id (completion, refs);
       }
 
       system_dir = flatpak_dir_get_system_default ();
       {
-        g_auto(GStrv) refs = flatpak_dir_find_installed_refs (system_dir, NULL, NULL, NULL,
-                                                              FLATPAK_KINDS_APP,
-                                                              FIND_MATCHING_REFS_FLAGS_NONE,
-                                                              &error);
+        g_autoptr(GPtrArray) refs = flatpak_dir_find_installed_refs (system_dir, NULL, NULL, NULL,
+                                                                     FLATPAK_KINDS_APP,
+                                                                     FIND_MATCHING_REFS_FLAGS_NONE,
+                                                                     &error);
         if (refs == NULL)
           flatpak_completion_debug ("find local refs error: %s", error->message);
-        for (i = 0; refs != NULL && refs[i] != NULL; i++)
-          {
-            g_auto(GStrv) parts = flatpak_decompose_ref (refs[i], NULL);
-            if (parts)
-              flatpak_complete_word (completion, "%s ", parts[1]);
-          }
+
+        flatpak_complete_ref_id (completion, refs);
       }
 
       break;

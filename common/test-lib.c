@@ -32,9 +32,8 @@ main (int argc, char *argv[])
   FlatpakInstalledRef *app1;
   FlatpakInstalledRef *app2;
   FlatpakRemoteRef *remote_ref;
-
   g_autoptr(GPtrArray) remotes = NULL;
-  GError *error = NULL;
+  g_autoptr(GError) error = NULL;
   int i, j, k;
 
   installation = flatpak_installation_new_user (NULL, &error);
@@ -55,7 +54,7 @@ main (int argc, char *argv[])
 
           for (k = 0; k < 2; k++)
             {
-              g_autoptr(GError) error = NULL;
+              g_autoptr(GError) local_error = NULL;
               g_autoptr(GPtrArray) related = NULL;
 
 
@@ -64,17 +63,17 @@ main (int argc, char *argv[])
                                                                               list[j],
                                                                               list[j + 1],
                                                                               NULL,
-                                                                              &error);
+                                                                              &local_error);
               else
                 related = flatpak_installation_list_installed_related_refs_sync (installation,
                                                                                  list[j],
                                                                                  list[j + 1],
                                                                                  NULL,
-                                                                                 &error);
+                                                                                 &local_error);
 
               if (related == NULL)
                 {
-                  g_warning ("Error: %s", error->message);
+                  g_warning ("Error: %s", local_error->message);
                   continue;
                 }
 
@@ -120,6 +119,7 @@ main (int argc, char *argv[])
 
   if (argc == 3)
     {
+      G_GNUC_BEGIN_IGNORE_DEPRECATIONS
       app1 = flatpak_installation_install (installation,
                                            argv[1],
                                            FLATPAK_REF_KIND_APP,
@@ -127,6 +127,7 @@ main (int argc, char *argv[])
                                            NULL, NULL,
                                            progress_cb, (gpointer) 0xdeadbeef,
                                            NULL, &error);
+      G_GNUC_END_IGNORE_DEPRECATIONS
       if (app1 == NULL)
         g_print ("Error: %s\n", error->message);
       else
@@ -138,6 +139,7 @@ main (int argc, char *argv[])
 
   if (argc == 2)
     {
+      G_GNUC_BEGIN_IGNORE_DEPRECATIONS
       app1 = flatpak_installation_update (installation,
                                           FLATPAK_UPDATE_FLAGS_NONE,
                                           FLATPAK_REF_KIND_APP,
@@ -145,6 +147,7 @@ main (int argc, char *argv[])
                                           NULL, NULL,
                                           progress_cb, (gpointer) 0xdeadbeef,
                                           NULL, &error);
+      G_GNUC_END_IGNORE_DEPRECATIONS
       if (app1 == NULL)
         g_print ("Error: %s\n", error->message);
       else
@@ -409,7 +412,6 @@ main (int argc, char *argv[])
                       g_print ("Download size: %"G_GUINT64_FORMAT " Installed size: %"G_GUINT64_FORMAT "\n",
                                download_size, installed_size);
                     }
-
                 }
             }
         }

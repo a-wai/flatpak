@@ -47,6 +47,7 @@ flatpak_builtin_remote_delete (int argc, char **argv, GCancellable *cancellable,
   g_autoptr(GOptionContext) context = NULL;
   g_autoptr(GPtrArray) dirs = NULL;
   g_autoptr(FlatpakDir) preferred_dir = NULL;
+  gboolean removed_all_refs = FALSE;
   const char *remote_name;
 
   context = g_option_context_new (_("NAME - Delete a remote repository"));
@@ -71,21 +72,22 @@ flatpak_builtin_remote_delete (int argc, char **argv, GCancellable *cancellable,
 
   if (!opt_force)
     {
-      g_auto(GStrv) refs = NULL;
+      g_autoptr(GPtrArray) refs = NULL;
       g_autoptr(GPtrArray) refs_to_remove = NULL;
       int i;
 
-      refs = flatpak_dir_find_installed_refs (preferred_dir, NULL, NULL, NULL, FLATPAK_KINDS_APP|FLATPAK_KINDS_RUNTIME, 0, error);
+      refs = flatpak_dir_find_installed_refs (preferred_dir, NULL, NULL, NULL, FLATPAK_KINDS_APP | FLATPAK_KINDS_RUNTIME, 0, error);
       if (refs == NULL)
         return FALSE;
 
       refs_to_remove = g_ptr_array_new_with_free_func (g_free);
 
-      for (i = 0; refs[i]; i++)
+      for (i = 0; refs != NULL && i < refs->len; i++)
         {
-          g_autofree char *origin = flatpak_dir_get_origin (preferred_dir, refs[i], NULL, NULL);
+          FlatpakDecomposed *ref = g_ptr_array_index (refs, i);
+          g_autofree char *origin = flatpak_dir_get_origin (preferred_dir, ref, NULL, NULL);
           if (g_strcmp0 (origin, remote_name) == 0)
-            g_ptr_array_add (refs_to_remove, g_strdup (refs[i]));
+            g_ptr_array_add (refs_to_remove, flatpak_decomposed_dup_ref (ref));
         }
 
       if (refs_to_remove->len > 0)
@@ -94,7 +96,7 @@ flatpak_builtin_remote_delete (int argc, char **argv, GCancellable *cancellable,
 
           g_ptr_array_add (refs_to_remove, NULL);
 
-          flatpak_format_choices ((const char **)refs_to_remove->pdata,
+          flatpak_format_choices ((const char **) refs_to_remove->pdata,
                                   _("The following refs are installed from remote '%s':"), remote_name);
           if (!flatpak_yes_no_prompt (FALSE, _("Remove them?")))
             return flatpak_fail_error (error, FLATPAK_ERROR_REMOTE_USED,
@@ -114,16 +116,16 @@ flatpak_builtin_remote_delete (int argc, char **argv, GCancellable *cancellable,
           if (!flatpak_transaction_run (transaction, cancellable, error))
             {
               if (g_error_matches (*error, FLATPAK_ERROR, FLATPAK_ERROR_ABORTED))
-                {
-                  g_clear_error (error);
-                  return TRUE;
-                }
+                g_clear_error (error);  /* Don't report on stderr */
+
               return FALSE;
             }
+
+          removed_all_refs = TRUE;
         }
     }
 
-  if (g_str_has_suffix (remote_name, "-origin"))
+  if (g_str_has_suffix (remote_name, "-origin") && removed_all_refs)
     // The remote has already been deleted because all its refs were deleted.
     return TRUE;
 

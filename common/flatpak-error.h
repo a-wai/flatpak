@@ -38,11 +38,11 @@ G_BEGIN_DECLS
  * @FLATPAK_ERROR_ONLY_PULLED: App/runtime was only pulled into the local
  *                             repository but not installed.
  * @FLATPAK_ERROR_DIFFERENT_REMOTE: The App/Runtime is already installed, but from a different remote.
- * @FLATPAK_ERROR_ABORTED: The transaction was aborted (returned TRUE in operation-error signal).
+ * @FLATPAK_ERROR_ABORTED: The transaction was aborted (returned %TRUE in operation-error signal).
  * @FLATPAK_ERROR_SKIPPED: The App/Runtime install was skipped due to earlier errors.
  * @FLATPAK_ERROR_NEED_NEW_FLATPAK: The App/Runtime needs a more recent version of flatpak.
  * @FLATPAK_ERROR_REMOTE_NOT_FOUND: The specified remote was not found.
- * @FLATPAK_ERROR_RUNTIME_NOT_FOUND: An runtime needed for the app was not found.
+ * @FLATPAK_ERROR_RUNTIME_NOT_FOUND: A runtime needed for the app was not found.
  * @FLATPAK_ERROR_DOWNGRADE: The pulled commit is a downgrade, and a downgrade wasn't
  *                           specifically allowed. (Since: 1.0)
  * @FLATPAK_ERROR_INVALID_REF: A ref could not be parsed. (Since: 1.0.3)
@@ -56,6 +56,16 @@ G_BEGIN_DECLS
  * @FLATPAK_ERROR_OUT_OF_SPACE: More disk space needed. (Since: 1.2.0)
  * @FLATPAK_ERROR_WRONG_USER: An operation is being attempted by the wrong user (such as
  *                            root operating on a user installation). (Since: 1.2.0)
+ * @FLATPAK_ERROR_NOT_CACHED: Cached data was requested, but it was not available. (Since: 1.4.0)
+ * @FLATPAK_ERROR_REF_NOT_FOUND: The specified ref was not found. (Since: 1.4.0)
+ * @FLATPAK_ERROR_PERMISSION_DENIED: An operation was not allowed by the administrative policy.
+ *                                   For example, an app is not allowed to be installed due
+ *                                   to not complying with the parental controls policy. (Since: 1.5.1)
+ * @FLATPAK_ERROR_AUTHENTICATION_FAILED: An authentication operation failed, for example, no
+ *                                       correct password was supplied. (Since: 1.7.3)
+ * @FLATPAK_ERROR_NOT_AUTHORIZED: An operation tried to access a ref, or information about it that it
+ *                                was not authorized. For example, when succesfully authenticating with a
+ *                                server but the user doesn't have permissions for a private ref. (Since: 1.7.3)
  *
  * Error codes for library functions.
  */
@@ -80,6 +90,11 @@ typedef enum {
   FLATPAK_ERROR_INVALID_NAME,
   FLATPAK_ERROR_OUT_OF_SPACE,
   FLATPAK_ERROR_WRONG_USER,
+  FLATPAK_ERROR_NOT_CACHED,
+  FLATPAK_ERROR_REF_NOT_FOUND,
+  FLATPAK_ERROR_PERMISSION_DENIED,
+  FLATPAK_ERROR_AUTHENTICATION_FAILED,
+  FLATPAK_ERROR_NOT_AUTHORIZED,
 } FlatpakError;
 
 /**
