@@ -1,3 +1,11 @@
+flatpak (1.2.5-0+deb10u1co2) apertis; urgency=medium
+
+  [ Ritesh Raj Sarraf ]
+  * debian/apertis/component: Set to development
+  * Move flatpak to target repository
+
+ -- Emanuele Aina <emanuele.aina@collabora.com>  Mon, 15 Feb 2021 09:59:22 +0000
+
 flatpak (1.2.5-0+deb10u1co1) apertis; urgency=medium
 
   * Apertis specific changes
