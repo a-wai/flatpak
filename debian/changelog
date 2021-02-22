@@ -1,6 +1,7 @@
-flatpak (1.2.5-0+deb10u3co1) UNRELEASED; urgency=medium
+flatpak (1.2.5-0+deb10u3co1) apertis; urgency=medium
 
-  * PLEASE SUMMARIZE remaining Apertis changes
+  [ Ritesh Raj Sarraf ]
+  * Sync updates from Debian Buster Security
 
  -- Apertis CI <devel@lists.apertis.org>  Mon, 22 Feb 2021 07:34:08 +0000
 
