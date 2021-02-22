@@ -1,0 +1,27 @@
+From: Simon McVittie <smcv@collabora.com>
+Date: Tue, 12 Jan 2021 12:32:58 +0000
+Subject: tests: Add minimal version of "ok" helper
+
+This makes it possible to cherry-pick improved test coverage from newer
+branches without having to edit it.
+
+Signed-off-by: Simon McVittie <smcv@collabora.com>
+---
+ tests/libtest.sh | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/tests/libtest.sh b/tests/libtest.sh
+index 4a5e699..87e8944 100644
+--- a/tests/libtest.sh
++++ b/tests/libtest.sh
+@@ -34,6 +34,10 @@ assert_not_reached () {
+     echo $@ 1>&2; exit 1
+ }
+ 
++ok () {
++    echo "ok $@"
++}
++
+ test_tmpdir=$(pwd)
+ 
+ # Sanity check that we're in a tmpdir that has
