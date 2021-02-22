@@ -46,8 +46,7 @@ Copyright: 2011, Colin Walters <walters@verbum.org>
 License: LGPL-2.1+
 
 Files: common/flatpak-dir.c
-Copyright: 2017, Endless Mobile, Inc.
- 2014, Red Hat, Inc
+Copyright: no-info-found
 License: LGPL-2.1+
 
 Files: common/flatpak-error.c
@@ -65,11 +64,6 @@ Files: common/valgrind-private.h
 Copyright: 2000-2017, Julian Seward.
 License: BSD-3-clause or GPL-2
 
-Files: config.guess
- config.sub
-Copyright: 1992-2018, Free Software Foundation, Inc.
-License: GPL-3
-
 Files: configure
 Copyright: 1992-1996, 1998-2012, Free Software Foundation, Inc.
 License: FSFUL
@@ -83,14 +77,19 @@ Copyright: 2014-2019, Red Hat, Inc
 License: LGPL-2.1+
 
 Files: dbus-proxy/backport-autoptr.h
-Copyright: 2015, Colin Walters <walters@verbum.org>
- 1995-1997, Peter Mattis, Spencer Kimball and Josh MacDonald
+Copyright: no-info-found
 License: LGPL-2+
 
 Files: debian/*
-Copyright:
- © 2015 David King <amigadave@amigadave.com>
- © 2016 Collabora Ltd.
+Copyright: no-info-found
+License: LGPL-2.1+
+
+Files: debian/patches/common-Move-flatpak_buffer_to_sealed_memfd_or_tmpfile-to-.patch
+Copyright: 2014-2019, Red Hat, Inc
+License: LGPL-2.1+
+
+Files: debian/patches/tests-Assert-that-env-does-not-go-in-flatpak-run-or-bwrap.patch
+Copyright: 2021, Collabora Ltd.
 License: LGPL-2.1+
 
 Files: doc/*
@@ -120,8 +119,7 @@ License: LGPL-2
 
 Files: libglnx/glnx-backport-autoptr.h
  libglnx/glnx-backports.h
-Copyright: 2015, Colin Walters <walters@verbum.org>
- 1995-1997, Peter Mattis, Spencer Kimball and Josh MacDonald
+Copyright: no-info-found
 License: LGPL-2+
 
 Files: libglnx/glnx-backports.c
@@ -145,24 +143,20 @@ Copyright: 2012-2015, Colin Walters <walters@verbum.org>.
 License: LGPL-2+
 
 Files: libglnx/glnx-fdio.c
-Copyright: 2014, 2015, Colin Walters <walters@verbum.org>.
- 2010, Lennart Poettering
+Copyright: no-info-found
 License: LGPL-2+
 
 Files: libglnx/glnx-lockfile.c
  libglnx/glnx-lockfile.h
-Copyright: 2015, Colin Walters <walters@verbum.org>
- 2010, 2011, Lennart Poettering
+Copyright: no-info-found
 License: LGPL-2.1+
 
 Files: libglnx/glnx-macros.h
-Copyright: 2017, Colin Walters <walters@verbum.org>
- 2010, Lennart Poettering
+Copyright: no-info-found
 License: LGPL-2+
 
 Files: libglnx/glnx-missing-syscall.h
-Copyright: 2016, Zbigniew Jędrzejewski-Szmek
- 2010, Lennart Poettering
+Copyright: no-info-found
 License: LGPL-2.1+
 
 Files: libglnx/glnx-missing.h
@@ -178,9 +172,7 @@ Copyright: 2017, 2018, Endless Mobile, Inc.
 License: LGPL-2+
 
 Files: m4/attributes.m4
-Copyright: 2012, Lucas De Marchi <lucas.de.marchi@gmail.com>
- 2006-2008, xine project
- 2006-2008, Diego Pettenò <flameeyes@gmail.com>
+Copyright: no-info-found
 License: GPL-2+
 
 Files: m4/gtk-doc.m4
@@ -208,8 +200,7 @@ Copyright: 2011, 2012, 2015, Colin Walters <walters@verbum.org>
 License: LGPL-2+
 
 Files: tests/libtest.sh
-Copyright: 2016, Alexander Larsson <alexl@redhat.com>
- 2011, Colin Walters <walters@verbum.org>
+Copyright: no-info-found
 License: LGPL-2+
 
 Files: tests/make-multi-collection-id-repo.sh
@@ -232,7 +223,7 @@ Files: tests/test-http-utils.sh
 Copyright: 2008, 2015, 2017, 2018, Red Hat, Inc.
 License: LGPL-2+
 
-Files: aclocal.m4 config.rpath aclocal.m4 config.rpath doc/Makefile.in doc/reference/html/* flatpak.png libglnx/* m4/* m4/ltoptions.m4 m4/ltsugar.m4 m4/lt~obsolete.m4 m4/ltoptions.m4 m4/ltsugar.m4 m4/lt~obsolete.m4 m4/ltoptions.m4 m4/ltsugar.m4 m4/lt~obsolete.m4 m4/nls.m4 system-helper/* tests/org.test.Hello.png tests/test-keyring/* tests/test-keyring/secring.gpg tests/test-keyring2/* tests/test-keyring2/secring.gpg
+Files: aclocal.m4 config.rpath aclocal.m4 config.rpath doc/Makefile.in doc/reference/html/* flatpak.png libglnx/* m4/* m4/ltoptions.m4 m4/ltsugar.m4 m4/lt~obsolete.m4 m4/ltoptions.m4 m4/ltsugar.m4 m4/lt~obsolete.m4 m4/ltoptions.m4 m4/ltsugar.m4 m4/lt~obsolete.m4 m4/nls.m4 system-helper/* tests/libpreload.c tests/org.test.Hello.png tests/test-keyring/* tests/test-keyring/secring.gpg tests/test-keyring2/* tests/test-keyring2/secring.gpg
 Copyright:
  © 1995-1997 Peter Mattis, Spencer Kimball and Josh MacDonald
  © 2010-2011 Lennart Poettering
