@@ -15,6 +15,7 @@ xdg-desktop-portal. Disabling revokefs, instead of skipping the test
 that needs it, is based on the patches applied in @alexlarsson's PPA.
 
 Signed-off-by: Simon McVittie <smcv@collabora.com>
+Applied-upstream: 1.11.0, commit:a926776cf4fcacc2d096e10bf1578a0e7c626cc7
 Forwarded: https://github.com/flatpak/flatpak/pull/4098
 ---
  tests/Makefile.am.inc |   8 +++-
@@ -179,7 +180,7 @@ index 0000000..bfc47e3
 +gboolean check_fuse (void);
 +gboolean check_fuse_or_skip_test (void);
 diff --git a/tests/testlibrary.c b/tests/testlibrary.c
-index 718f37c..64dff19 100644
+index b5ad853..b8f04ef 100644
 --- a/tests/testlibrary.c
 +++ b/tests/testlibrary.c
 @@ -10,6 +10,8 @@
