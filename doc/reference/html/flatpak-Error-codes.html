@@ -2,13 +2,13 @@
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<title>Error codes: Flatpak Reference Manual</title>
+<title>Error codes: Flatpak Library Reference Manual</title>
 <meta name="generator" content="DocBook XSL Stylesheets Vsnapshot">
-<link rel="home" href="index.html" title="Flatpak Reference Manual">
-<link rel="up" href="ch01.html" title="[Insert title here]">
-<link rel="prev" href="flatpak-Version-information.html" title="Version information">
-<link rel="next" href="FlatpakBundleRef.html" title="FlatpakBundleRef">
-<meta name="generator" content="GTK-Doc V1.32.1 (XML mode)">
+<link rel="home" href="index.html" title="Flatpak Library Reference Manual">
+<link rel="up" href="ch01.html" title="Flatpak">
+<link rel="prev" href="FlatpakInstance.html" title="FlatpakInstance">
+<link rel="next" href="flatpak-Version-information.html" title="Version information">
+<meta name="generator" content="GTK-Doc V1.33.0 (XML mode)">
 <link rel="stylesheet" href="style.css" type="text/css">
 </head>
 <body bgcolor="white" text="black" link="#0000FF" vlink="#840084" alink="#0000FF">
@@ -19,8 +19,8 @@
 </td>
 <td><a accesskey="h" href="index.html"><img src="home.png" width="16" height="16" border="0" alt="Home"></a></td>
 <td><a accesskey="u" href="ch01.html"><img src="up.png" width="16" height="16" border="0" alt="Up"></a></td>
-<td><a accesskey="p" href="flatpak-Version-information.html"><img src="left.png" width="16" height="16" border="0" alt="Prev"></a></td>
-<td><a accesskey="n" href="FlatpakBundleRef.html"><img src="right.png" width="16" height="16" border="0" alt="Next"></a></td>
+<td><a accesskey="p" href="FlatpakInstance.html"><img src="left.png" width="16" height="16" border="0" alt="Prev"></a></td>
+<td><a accesskey="n" href="flatpak-Version-information.html"><img src="right.png" width="16" height="16" border="0" alt="Next"></a></td>
 </tr></table>
 <div class="refentry">
 <a name="flatpak-Error-codes"></a><div class="titlepage"></div>
@@ -120,7 +120,7 @@ repository but not installed.</p>
 <tr>
 <td class="enum_member_name"><p><a name="FLATPAK-ERROR-ABORTED:CAPS"></a>FLATPAK_ERROR_ABORTED</p></td>
 <td class="enum_member_description">
-<p>The transaction was aborted (returned TRUE in operation-error signal).</p>
+<p>The transaction was aborted (returned <code class="literal">TRUE</code> in operation-error signal).</p>
 </td>
 <td class="enum_member_annotations"> </td>
 </tr>
@@ -148,7 +148,7 @@ repository but not installed.</p>
 <tr>
 <td class="enum_member_name"><p><a name="FLATPAK-ERROR-RUNTIME-NOT-FOUND:CAPS"></a>FLATPAK_ERROR_RUNTIME_NOT_FOUND</p></td>
 <td class="enum_member_description">
-<p>An runtime needed for the app was not found.</p>
+<p>A runtime needed for the app was not found.</p>
 </td>
 <td class="enum_member_annotations"> </td>
 </tr>
@@ -231,6 +231,46 @@ root operating on a user installation). (Since: 1.2.0)</p>
 </td>
 <td class="enum_member_annotations"> </td>
 </tr>
+<tr>
+<td class="enum_member_name"><p><a name="FLATPAK-ERROR-NOT-CACHED:CAPS"></a>FLATPAK_ERROR_NOT_CACHED</p></td>
+<td class="enum_member_description">
+<p>Cached data was requested, but it was not available. (Since: 1.4.0)</p>
+</td>
+<td class="enum_member_annotations"> </td>
+</tr>
+<tr>
+<td class="enum_member_name"><p><a name="FLATPAK-ERROR-REF-NOT-FOUND:CAPS"></a>FLATPAK_ERROR_REF_NOT_FOUND</p></td>
+<td class="enum_member_description">
+<p>The specified ref was not found. (Since: 1.4.0)</p>
+</td>
+<td class="enum_member_annotations"> </td>
+</tr>
+<tr>
+<td class="enum_member_name"><p><a name="FLATPAK-ERROR-PERMISSION-DENIED:CAPS"></a>FLATPAK_ERROR_PERMISSION_DENIED</p></td>
+<td class="enum_member_description">
+<p>An operation was not allowed by the administrative policy.
+For example, an app is not allowed to be installed due
+to not complying with the parental controls policy. (Since: 1.5.1)</p>
+</td>
+<td class="enum_member_annotations"> </td>
+</tr>
+<tr>
+<td class="enum_member_name"><p><a name="FLATPAK-ERROR-AUTHENTICATION-FAILED:CAPS"></a>FLATPAK_ERROR_AUTHENTICATION_FAILED</p></td>
+<td class="enum_member_description">
+<p>An authentication operation failed, for example, no
+correct password was supplied. (Since: 1.7.3)</p>
+</td>
+<td class="enum_member_annotations"> </td>
+</tr>
+<tr>
+<td class="enum_member_name"><p><a name="FLATPAK-ERROR-NOT-AUTHORIZED:CAPS"></a>FLATPAK_ERROR_NOT_AUTHORIZED</p></td>
+<td class="enum_member_description">
+<p>An operation tried to access a ref, or information about it that it
+was not authorized. For example, when succesfully authenticating with a
+server but the user doesn't have permissions for a private ref. (Since: 1.7.3)</p>
+</td>
+<td class="enum_member_annotations"> </td>
+</tr>
 </tbody>
 </table></div>
 </div>
@@ -245,6 +285,7 @@ root operating on a user installation). (Since: 1.2.0)</p>
 <hr>
 <div class="refsect2">
 <a name="FlatpakPortalError"></a><h3>enum FlatpakPortalError</h3>
+<p>Error codes returned by portal calls.</p>
 <div class="refsect3">
 <a name="FlatpakPortalError.members"></a><h4>Members</h4>
 <div class="informaltable"><table class="informaltable" width="100%" border="0">
@@ -271,7 +312,7 @@ root operating on a user installation). (Since: 1.2.0)</p>
 <tr>
 <td class="enum_member_name"><p><a name="FLATPAK-PORTAL-ERROR-NOT-FOUND:CAPS"></a>FLATPAK_PORTAL_ERROR_NOT_FOUND</p></td>
 <td class="enum_member_description">
-<p>The object was not fount</p>
+<p>The object was not found</p>
 </td>
 <td class="enum_member_annotations"> </td>
 </tr>
@@ -310,6 +351,6 @@ root operating on a user installation). (Since: 1.2.0)</p>
 </div>
 </div>
 <div class="footer">
-<hr>Generated by GTK-Doc V1.32.1</div>
+<hr>Generated by GTK-Doc V1.33.0</div>
 </body>
 </html>

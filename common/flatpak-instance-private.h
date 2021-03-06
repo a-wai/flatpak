@@ -24,5 +24,8 @@
 #include "flatpak-instance.h"
 
 FlatpakInstance *flatpak_instance_new (const char *dir);
+FlatpakInstance *flatpak_instance_new_for_id (const char *id);
+
+void flatpak_instance_iterate_all_and_gc (GPtrArray *out_instances);
 
 #endif /* __FLATPAK_INSTANCE_PRIVATE_H__ */

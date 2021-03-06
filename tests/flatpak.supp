@@ -156,6 +156,15 @@
   fun:_check_support_reflink
 }
 
+# Some unsupported ioctl
+{
+   ignore_ostree_write_ioctl
+   Memcheck:Param
+   ioctl(generic)
+   fun:ioctl
+   obj:*/libostree-1.so.1.0.0
+}
+
 # ostree pthread_create issue
 {
    ostree_pthread_create_issue
@@ -228,4 +237,20 @@
    fun:calloc
    fun:g_malloc0
    fun:push_repo_lock
+}
+# Some gnutls conditional failure
+{
+   gnutls_import_fail
+   Memcheck:Cond
+   ...
+   fun:gnutls_x509_ext_import_subject_alt_names
+   fun:gnutls_x509_crt_import
+}
+# Deliberately leaking once per process
+{
+   flatpak_get_user_base_dir_location
+   Memcheck:Leak
+   ...
+   fun:g_file_new_for_path
+   fun:flatpak_get_user_base_dir_location
 }

@@ -26,6 +26,7 @@ IGNORE_HFILES = \
 	flatpak-json-oci-private.h \
 	flatpak-json-private.h \
 	flatpak-oci-registry-private.h \
+	flatpak-progress-private.h \
 	flatpak-remote-private.h \
 	flatpak-remote-ref-private.h \
 	flatpak-run-private.h \
@@ -33,20 +34,49 @@ IGNORE_HFILES = \
 	flatpak-installation-private.h \
 	flatpak-transaction-private.h \
 	flatpak-utils-private.h \
+	flatpak-utils-base-private.h \
+	flatpak-utils-http-private.h \
 	flatpak-instance-private.h \
+	flatpak-auth-private.h \
+	flatpak-parental-controls-private.h \
+	flatpak-appdata-private.h \
+	flatpak-zstd-decompressor-private.h \
 	$(NULL)
 
 EXTRA_HFILES =
 
 HTML_IMAGES =
 
+dbus_stamp_files = \
+	dbus-org.freedesktop.Flatpak.Authenticator.stamp \
+	dbus-org.freedesktop.Flatpak.stamp \
+	dbus-org.freedesktop.impl.portal.PermissionStore.stamp \
+	dbus-org.freedesktop.portal.Documents.stamp \
+	dbus-org.freedesktop.portal.Flatpak.stamp \
+	$(NULL)
+
+# Generated from the above stamps
+xml_files = \
+	dbus-org.freedesktop.Flatpak.AuthenticatorRequest.xml \
+	dbus-org.freedesktop.Flatpak.Authenticator.xml \
+	dbus-org.freedesktop.Flatpak.Development.xml \
+	dbus-org.freedesktop.Flatpak.SessionHelper.xml \
+	dbus-org.freedesktop.Flatpak.SystemHelper.xml \
+	dbus-org.freedesktop.impl.portal.PermissionStore.xml \
+	dbus-org.freedesktop.portal.Documents.xml \
+	dbus-org.freedesktop.portal.Flatpak.UpdateMonitor.xml \
+	dbus-org.freedesktop.portal.Flatpak.xml \
+	$(NULL)
+
 content_files =
-expand_content_files = 
+expand_content_files =
 
 AM_CPPFLAGS = -I$(top_srcdir)/common -I$(top_builddir)/common $(BASE_CFLAGS)
 GTKDOC_LIBS = $(top_builddir)/libflatpak.la $(BASE_LIBS)
 
 include $(top_srcdir)/gtk-doc.make
+
+CLEANFILES += $(xml_files)
 
 EXTRA_DIST += version.xml.in
 
@@ -57,6 +87,7 @@ TESTS_ENVIRONMENT = \
 TESTS = $(GTKDOC_CHECK)
 endif
 
-libflatpak-docs.html: libflatpak-docs.xml docs
-	$(AM_V_GEN) $(XMLTO) $(XMLTO_FLAGS) --skip-validation xhtml-nochunks -m $(srcdir)/../xmlto-config.xsl $<
+sgml.stamp: $(dbus_stamp_files)
 
+dbus-%.stamp: $(top_srcdir)/data/%.xml
+	$(AM_V_GEN)$(GDBUS_CODEGEN) --generate-docbook=dbus $<

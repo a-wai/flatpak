@@ -12,14 +12,14 @@ dbusconfdir = $(DBUS_CONFIG_DIR)
 dist_dbusconf_DATA = system-helper/org.freedesktop.Flatpak.SystemHelper.conf
 
 service_in_files += system-helper/flatpak-system-helper.service.in
-systemdsystemunit_DATA = system-helper/flatpak-system-helper.service
+systemdsystemunit_DATA += system-helper/flatpak-system-helper.service
 
 flatpak_system_helper_SOURCES = \
 	system-helper/flatpak-system-helper.c	\
 	$(NULL)
 
-flatpak_system_helper_LDADD = $(BASE_LIBS) $(OSTREE_LIBS) $(JSON_LIBS) $(POLKIT_LIBS) libflatpak-common.la
-flatpak_system_helper_CFLAGS = $(BASE_CFLAGS) $(OSTREE_CFLAGS) $(APPSTREAM_GLIB_CFLAGS) $(SOUP_CFLAGS) $(JSON_CFLAGS) $(POLKIT_CFLAGS) -DFLATPAK_COMPILATION
+flatpak_system_helper_LDADD = $(BASE_LIBS) $(OSTREE_LIBS) $(JSON_LIBS) $(POLKIT_LIBS) libflatpak-common.la libflatpak-common-base.la libglnx.la
+flatpak_system_helper_CFLAGS = $(AM_CFLAGS) $(BASE_CFLAGS) $(OSTREE_CFLAGS) $(APPSTREAM_GLIB_CFLAGS) $(SOUP_CFLAGS) $(JSON_CFLAGS) $(POLKIT_CFLAGS) -DFLATPAK_COMPILATION -DLIBEXECDIR=\"$(libexecdir)\"
 
 system-helper/org.freedesktop.Flatpak.rules: system-helper/org.freedesktop.Flatpak.rules.in
 	$(AM_V_GEN) $(SED) -e "s|\@privileged_group\@|$(PRIVILEGED_GROUP)|" $< > $@
@@ -35,8 +35,15 @@ polkit_policy_DATA =					\
 %.policy: %.policy.in
 	$(AM_V_GEN) $(MSGFMT) --xml -d $(top_srcdir)/po --template $< -o $@ || cp $< $@
 
-DISTCLEANFILES += system-helper/org.freedesktop.Flatpak.policy system-helper/org.freedesktop.Flatpak.rules system-helper/flatpak-system-helper.service system-helper/org.freedesktop.Flatpak.SystemHelper.service
+sysusers_DATA = system-helper/flatpak.conf
+
+%.conf: %.conf.in
+	$(AM_V_GEN) $(SED) \
+	  -e "s|\@SYSTEM_HELPER_USER\@|$(SYSTEM_HELPER_USER)|" \
+	  $< > $@
+
+DISTCLEANFILES += system-helper/org.freedesktop.Flatpak.policy system-helper/org.freedesktop.Flatpak.rules system-helper/flatpak-system-helper.service system-helper/org.freedesktop.Flatpak.SystemHelper.service system-helper/flatpak.conf
 
 endif
 
-EXTRA_DIST += system-helper/org.freedesktop.Flatpak.policy.in system-helper/org.freedesktop.Flatpak.SystemHelper.conf system-helper/org.freedesktop.Flatpak.rules.in system-helper/org.freedesktop.Flatpak.SystemHelper.service.in system-helper/flatpak-system-helper.service.in
+EXTRA_DIST += system-helper/org.freedesktop.Flatpak.policy.in system-helper/org.freedesktop.Flatpak.SystemHelper.conf system-helper/org.freedesktop.Flatpak.rules.in system-helper/org.freedesktop.Flatpak.SystemHelper.service.in system-helper/flatpak-system-helper.service.in system-helper/flatpak.conf.in

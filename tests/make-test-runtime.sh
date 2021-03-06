@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 set -e
 
@@ -11,7 +11,12 @@ REPO=$1
 shift
 ID=$1
 shift
+BRANCH=$1
+shift
 COLLECTION_ID=$1
+shift
+
+EXTRA="${1-}"
 shift
 
 mkdir ${DIR}/files
@@ -58,19 +63,26 @@ add_bin() {
     fi
 }
 
-for i in $@ bash ls cat echo readlink; do
+for i in $@ bash ls cat echo readlink socat; do
     I=`which $i`
     add_bin $I
 done
 for i in `cat $BINS`; do
-    echo Adding binary $i 1>&2
+    #echo Adding binary $i 1>&2
     cp "$i" ${DIR}/usr/bin/
 done
 for i in `cat $LIBS`; do
-    echo Adding library $i 1>&2
+    #echo Adding library $i 1>&2
     cp "$i" ${DIR}/usr/lib/
 done
 ln -s bash ${DIR}/usr/bin/sh
+
+# This only exists so we can update the runtime
+cat > ${DIR}/usr/bin/runtime_hello.sh <<EOF
+#!/bin/sh
+echo "Hello world, from a runtime$EXTRA"
+EOF
+chmod a+x ${DIR}/usr/bin/runtime_hello.sh
 
 # We copy the C.UTF8 locale and call it en_US. Its a bit of a lie, but
 # the real en_US locale is often not available, because its in the
@@ -85,5 +97,5 @@ else
 fi
 
 mkdir -p repos
-flatpak build-export ${collection_args} --disable-sandbox --runtime ${GPGARGS-} ${REPO} ${DIR}
+flatpak build-export ${collection_args} --no-update-summary --disable-sandbox --runtime ${GPGARGS-} ${EXPORT_ARGS-} ${REPO} ${DIR} ${BRANCH}
 rm -rf ${DIR}

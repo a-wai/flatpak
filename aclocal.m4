@@ -1,6 +1,6 @@
-# generated automatically by aclocal 1.16.1 -*- Autoconf -*-
+# generated automatically by aclocal 1.16.2 -*- Autoconf -*-
 
-# Copyright (C) 1996-2018 Free Software Foundation, Inc.
+# Copyright (C) 1996-2020 Free Software Foundation, Inc.
 
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -21,7 +21,7 @@ If you have problems, you may need to regenerate the build system entirely.
 To do so, use the procedure documented by the package, typically 'autoreconf'.])])
 
 # gpgme.m4 - autoconf macro to detect GPGME.
-# Copyright (C) 2002, 2003, 2004, 2014 g10 Code GmbH
+# Copyright (C) 2002, 2003, 2004, 2014, 2018 g10 Code GmbH
 #
 # This file is free software; as a special exception the author gives
 # unlimited permission to copy and/or distribute it, with or without
@@ -31,7 +31,7 @@ To do so, use the procedure documented by the package, typically 'autoreconf'.])
 # WITHOUT ANY WARRANTY, to the extent permitted by law; without even the
 # implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 #
-# Last-changed: 2014-10-02
+# Last-changed: 2018-11-12
 
 
 AC_DEFUN([_AM_PATH_GPGME_CONFIG],
@@ -58,10 +58,24 @@ AC_DEFUN([_AM_PATH_GPGME_CONFIG],
      fi
   fi
 
-  AC_PATH_PROG(GPGME_CONFIG, gpgme-config, no)
+  use_gpgrt_config=""
+  if test x"${GPGME_CONFIG}" = x -a x"$GPGRT_CONFIG" != x -a "$GPGRT_CONFIG" != "no"; then
+    if $GPGRT_CONFIG gpgme --exists; then
+      GPGME_CONFIG="$GPGRT_CONFIG gpgme"
+      AC_MSG_NOTICE([Use gpgrt-config as gpgme-config])
+      use_gpgrt_config=yes
+    fi
+  fi
+  if test -z "$use_gpgrt_config"; then
+    AC_PATH_PROG(GPGME_CONFIG, gpgme-config, no)
+  fi
 
   if test "$GPGME_CONFIG" != "no" ; then
-    gpgme_version=`$GPGME_CONFIG --version`
+    if test -z "$use_gpgrt_config"; then
+      gpgme_version=`$GPGME_CONFIG --version`
+    else
+      gpgme_version=`$GPGME_CONFIG --modversion`
+    fi
   fi
   gpgme_version_major=`echo $gpgme_version | \
                sed 's/\([[0-9]]*\)\.\([[0-9]]*\)\.\([[0-9]]*\).*/\1/'`
@@ -74,12 +88,16 @@ AC_DEFUN([_AM_PATH_GPGME_CONFIG],
 
 AC_DEFUN([_AM_PATH_GPGME_CONFIG_HOST_CHECK],
 [
-    gpgme_config_host=`$GPGME_CONFIG --host 2>/dev/null || echo none`
+    if test -z "$use_gpgrt_config"; then
+      gpgme_config_host=`$GPGME_CONFIG --host 2>/dev/null || echo none`
+    else
+      gpgme_config_host=`$GPGME_CONFIG --variable=host 2>/dev/null || echo none`
+    fi
     if test x"$gpgme_config_host" != xnone ; then
       if test x"$gpgme_config_host" != x"$host" ; then
   AC_MSG_WARN([[
 ***
-*** The config script $GPGME_CONFIG was
+*** The config script "$GPGME_CONFIG" was
 *** built for $gpgme_config_host and thus may not match the
 *** used host $host.
 *** You may want to use the configure option --with-gpgme-prefix
@@ -140,7 +158,11 @@ AC_DEFUN([AM_PATH_GPGME],
      # If we have a recent GPGME, we should also check that the
      # API is compatible.
      if test "$req_gpgme_api" -gt 0 ; then
-        tmp=`$GPGME_CONFIG --api-version 2>/dev/null || echo 0`
+        if test -z "$use_gpgrt_config"; then
+          tmp=`$GPGME_CONFIG --api-version 2>/dev/null || echo 0`
+        else
+          tmp=`$GPGME_CONFIG --variable=api_version 2>/dev/null || echo 0`
+        fi
         if test "$tmp" -gt 0 ; then
            if test "$req_gpgme_api" -ne "$tmp" ; then
              ok=no
@@ -280,7 +302,11 @@ AC_DEFUN([AM_PATH_GPGME_GLIB],
      # If we have a recent GPGME, we should also check that the
      # API is compatible.
      if test "$req_gpgme_api" -gt 0 ; then
-        tmp=`$GPGME_CONFIG --api-version 2>/dev/null || echo 0`
+        if test -z "$use_gpgrt_config"; then
+          tmp=`$GPGME_CONFIG --api-version 2>/dev/null || echo 0`
+        else
+          tmp=`$GPGME_CONFIG --variable=api_version 2>/dev/null || echo 0`
+        fi
         if test "$tmp" -gt 0 ; then
            if test "$req_gpgme_api" -ne "$tmp" ; then
              ok=no
@@ -289,8 +315,20 @@ AC_DEFUN([AM_PATH_GPGME_GLIB],
      fi
   fi
   if test $ok = yes; then
-    GPGME_GLIB_CFLAGS=`$GPGME_CONFIG --glib --cflags`
-    GPGME_GLIB_LIBS=`$GPGME_CONFIG --glib --libs`
+    if test -z "$use_gpgrt_config"; then
+      GPGME_GLIB_CFLAGS=`$GPGME_CONFIG --glib --cflags`
+      GPGME_GLIB_LIBS=`$GPGME_CONFIG --glib --libs`
+    else
+      if $GPGRT_CONFIG gpgme-glib --exists; then
+        GPGME_CONFIG="$GPGRT_CONFIG gpgme-glib"
+        GPGME_GLIB_CFLAGS=`$GPGME_CONFIG --cflags`
+        GPGME_GLIB_LIBS=`$GPGME_CONFIG --libs`
+      else
+        ok = no
+      fi
+    fi
+  fi
+  if test $ok = yes; then
     AC_MSG_RESULT(yes)
     ifelse([$2], , :, [$2])
     _AM_PATH_GPGME_CONFIG_HOST_CHECK
@@ -658,6 +696,47 @@ dnl
 
 # serial 1
 
+dnl This is a copy of AS_AC_EXPAND
+dnl
+dnl (C) 2003, 2004, 2005 Thomas Vander Stichele <thomas at apestaart dot org>
+dnl Copying and distribution of this file, with or without modification,
+dnl are permitted in any medium without royalty provided the copyright
+dnl notice and this notice are preserved.
+m4_define([_GOBJECT_INTROSPECTION_AS_AC_EXPAND],
+[
+  EXP_VAR=[$1]
+  FROM_VAR=[$2]
+
+  dnl first expand prefix and exec_prefix if necessary
+  prefix_save=$prefix
+  exec_prefix_save=$exec_prefix
+
+  dnl if no prefix given, then use /usr/local, the default prefix
+  if test "x$prefix" = "xNONE"; then
+    prefix="$ac_default_prefix"
+  fi
+  dnl if no exec_prefix given, then use prefix
+  if test "x$exec_prefix" = "xNONE"; then
+    exec_prefix=$prefix
+  fi
+
+  full_var="$FROM_VAR"
+  dnl loop until it doesn't change anymore
+  while true; do
+    new_full_var="`eval echo $full_var`"
+    if test "x$new_full_var" = "x$full_var"; then break; fi
+    full_var=$new_full_var
+  done
+
+  dnl clean up
+  full_var=$new_full_var
+  AC_SUBST([$1], "$full_var")
+
+  dnl restore prefix and exec_prefix
+  prefix=$prefix_save
+  exec_prefix=$exec_prefix_save
+])
+
 m4_define([_GOBJECT_INTROSPECTION_CHECK_INTERNAL],
 [
     AC_BEFORE([AC_PROG_LIBTOOL],[$0])dnl setup libtool first
@@ -700,20 +779,25 @@ m4_define([_GOBJECT_INTROSPECTION_CHECK_INTERNAL],
 
     AC_MSG_RESULT([$found_introspection])
 
+    dnl expand datadir/libdir so we can pass them to pkg-config
+    dnl and get paths relative to our target directories
+    _GOBJECT_INTROSPECTION_AS_AC_EXPAND(_GI_EXP_DATADIR, "$datadir")
+    _GOBJECT_INTROSPECTION_AS_AC_EXPAND(_GI_EXP_LIBDIR, "$libdir")
+
     INTROSPECTION_SCANNER=
     INTROSPECTION_COMPILER=
     INTROSPECTION_GENERATE=
     INTROSPECTION_GIRDIR=
     INTROSPECTION_TYPELIBDIR=
     if test "x$found_introspection" = "xyes"; then
-       INTROSPECTION_SCANNER=`$PKG_CONFIG --variable=g_ir_scanner gobject-introspection-1.0`
-       INTROSPECTION_COMPILER=`$PKG_CONFIG --variable=g_ir_compiler gobject-introspection-1.0`
-       INTROSPECTION_GENERATE=`$PKG_CONFIG --variable=g_ir_generate gobject-introspection-1.0`
-       INTROSPECTION_GIRDIR=`$PKG_CONFIG --variable=girdir gobject-introspection-1.0`
-       INTROSPECTION_TYPELIBDIR="$($PKG_CONFIG --variable=typelibdir gobject-introspection-1.0)"
+       INTROSPECTION_SCANNER=$PKG_CONFIG_SYSROOT_DIR`$PKG_CONFIG --variable=g_ir_scanner gobject-introspection-1.0`
+       INTROSPECTION_COMPILER=$PKG_CONFIG_SYSROOT_DIR`$PKG_CONFIG --variable=g_ir_compiler gobject-introspection-1.0`
+       INTROSPECTION_GENERATE=$PKG_CONFIG_SYSROOT_DIR`$PKG_CONFIG --variable=g_ir_generate gobject-introspection-1.0`
+       INTROSPECTION_GIRDIR=`$PKG_CONFIG --define-variable=datadir="${_GI_EXP_DATADIR}" --variable=girdir gobject-introspection-1.0`
+       INTROSPECTION_TYPELIBDIR="$($PKG_CONFIG --define-variable=libdir="${_GI_EXP_LIBDIR}" --variable=typelibdir gobject-introspection-1.0)"
        INTROSPECTION_CFLAGS=`$PKG_CONFIG --cflags gobject-introspection-1.0`
        INTROSPECTION_LIBS=`$PKG_CONFIG --libs gobject-introspection-1.0`
-       INTROSPECTION_MAKEFILE=`$PKG_CONFIG --variable=datadir gobject-introspection-1.0`/gobject-introspection-1.0/Makefile.introspection
+       INTROSPECTION_MAKEFILE=$PKG_CONFIG_SYSROOT_DIR`$PKG_CONFIG --variable=datadir gobject-introspection-1.0`/gobject-introspection-1.0/Makefile.introspection
     fi
     AC_SUBST(INTROSPECTION_SCANNER)
     AC_SUBST(INTROSPECTION_COMPILER)
@@ -745,7 +829,7 @@ AC_DEFUN([GOBJECT_INTROSPECTION_REQUIRE],
   _GOBJECT_INTROSPECTION_CHECK_INTERNAL([$1], [require])
 ])
 
-# Copyright (C) 2002-2018 Free Software Foundation, Inc.
+# Copyright (C) 2002-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -760,7 +844,7 @@ AC_DEFUN([AM_AUTOMAKE_VERSION],
 [am__api_version='1.16'
 dnl Some users find AM_AUTOMAKE_VERSION and mistake it for a way to
 dnl require some minimum version.  Point them to the right macro.
-m4_if([$1], [1.16.1], [],
+m4_if([$1], [1.16.2], [],
       [AC_FATAL([Do not call $0, use AM_INIT_AUTOMAKE([$1]).])])dnl
 ])
 
@@ -776,14 +860,14 @@ m4_define([_AM_AUTOCONF_VERSION], [])
 # Call AM_AUTOMAKE_VERSION and AM_AUTOMAKE_VERSION so they can be traced.
 # This function is AC_REQUIREd by AM_INIT_AUTOMAKE.
 AC_DEFUN([AM_SET_CURRENT_AUTOMAKE_VERSION],
-[AM_AUTOMAKE_VERSION([1.16.1])dnl
+[AM_AUTOMAKE_VERSION([1.16.2])dnl
 m4_ifndef([AC_AUTOCONF_VERSION],
   [m4_copy([m4_PACKAGE_VERSION], [AC_AUTOCONF_VERSION])])dnl
 _AM_AUTOCONF_VERSION(m4_defn([AC_AUTOCONF_VERSION]))])
 
 # AM_AUX_DIR_EXPAND                                         -*- Autoconf -*-
 
-# Copyright (C) 2001-2018 Free Software Foundation, Inc.
+# Copyright (C) 2001-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -835,7 +919,7 @@ am_aux_dir=`cd "$ac_aux_dir" && pwd`
 
 # AM_CONDITIONAL                                            -*- Autoconf -*-
 
-# Copyright (C) 1997-2018 Free Software Foundation, Inc.
+# Copyright (C) 1997-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -866,7 +950,7 @@ AC_CONFIG_COMMANDS_PRE(
 Usually this means the macro was only invoked conditionally.]])
 fi])])
 
-# Copyright (C) 1999-2018 Free Software Foundation, Inc.
+# Copyright (C) 1999-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1057,7 +1141,7 @@ _AM_SUBST_NOTMAKE([am__nodep])dnl
 
 # Generate code to set up dependency tracking.              -*- Autoconf -*-
 
-# Copyright (C) 1999-2018 Free Software Foundation, Inc.
+# Copyright (C) 1999-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1096,7 +1180,9 @@ AC_DEFUN([_AM_OUTPUT_DEPENDENCY_COMMANDS],
   done
   if test $am_rc -ne 0; then
     AC_MSG_FAILURE([Something went wrong bootstrapping makefile fragments
-    for automatic dependency tracking.  Try re-running configure with the
+    for automatic dependency tracking.  If GNU make was not used, consider
+    re-running the configure script with MAKE="gmake" (or whatever is
+    necessary).  You can also try re-running configure with the
     '--disable-dependency-tracking' option to at least be able to build
     the package (albeit without support for automatic dependency tracking).])
   fi
@@ -1123,7 +1209,7 @@ AC_DEFUN([AM_OUTPUT_DEPENDENCY_COMMANDS],
 
 # Do all the work for Automake.                             -*- Autoconf -*-
 
-# Copyright (C) 1996-2018 Free Software Foundation, Inc.
+# Copyright (C) 1996-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1320,7 +1406,7 @@ for _am_header in $config_headers :; do
 done
 echo "timestamp for $_am_arg" >`AS_DIRNAME(["$_am_arg"])`/stamp-h[]$_am_stamp_count])
 
-# Copyright (C) 2001-2018 Free Software Foundation, Inc.
+# Copyright (C) 2001-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1341,7 +1427,7 @@ if test x"${install_sh+set}" != xset; then
 fi
 AC_SUBST([install_sh])])
 
-# Copyright (C) 2003-2018 Free Software Foundation, Inc.
+# Copyright (C) 2003-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1363,7 +1449,7 @@ AC_SUBST([am__leading_dot])])
 # Add --enable-maintainer-mode option to configure.         -*- Autoconf -*-
 # From Jim Meyering
 
-# Copyright (C) 1996-2018 Free Software Foundation, Inc.
+# Copyright (C) 1996-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1398,7 +1484,7 @@ AC_MSG_CHECKING([whether to enable maintainer-specific portions of Makefiles])
 
 # Check to see how 'make' treats includes.	            -*- Autoconf -*-
 
-# Copyright (C) 2001-2018 Free Software Foundation, Inc.
+# Copyright (C) 2001-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1441,7 +1527,7 @@ AC_SUBST([am__quote])])
 
 # Fake the existence of programs that GNU maintainers use.  -*- Autoconf -*-
 
-# Copyright (C) 1997-2018 Free Software Foundation, Inc.
+# Copyright (C) 1997-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1480,7 +1566,7 @@ fi
 
 # Helper functions for option handling.                     -*- Autoconf -*-
 
-# Copyright (C) 2001-2018 Free Software Foundation, Inc.
+# Copyright (C) 2001-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1509,7 +1595,7 @@ AC_DEFUN([_AM_SET_OPTIONS],
 AC_DEFUN([_AM_IF_OPTION],
 [m4_ifset(_AM_MANGLE_OPTION([$1]), [$2], [$3])])
 
-# Copyright (C) 1999-2018 Free Software Foundation, Inc.
+# Copyright (C) 1999-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1556,7 +1642,7 @@ AC_LANG_POP([C])])
 # For backward compatibility.
 AC_DEFUN_ONCE([AM_PROG_CC_C_O], [AC_REQUIRE([AC_PROG_CC])])
 
-# Copyright (C) 2001-2018 Free Software Foundation, Inc.
+# Copyright (C) 2001-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1575,7 +1661,7 @@ AC_DEFUN([AM_RUN_LOG],
 
 # Check to make sure that the build environment is sane.    -*- Autoconf -*-
 
-# Copyright (C) 1996-2018 Free Software Foundation, Inc.
+# Copyright (C) 1996-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1656,7 +1742,7 @@ AC_CONFIG_COMMANDS_PRE(
 rm -f conftest.file
 ])
 
-# Copyright (C) 2009-2018 Free Software Foundation, Inc.
+# Copyright (C) 2009-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1716,7 +1802,7 @@ AC_SUBST([AM_BACKSLASH])dnl
 _AM_SUBST_NOTMAKE([AM_BACKSLASH])dnl
 ])
 
-# Copyright (C) 2001-2018 Free Software Foundation, Inc.
+# Copyright (C) 2001-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1744,7 +1830,7 @@ fi
 INSTALL_STRIP_PROGRAM="\$(install_sh) -c -s"
 AC_SUBST([INSTALL_STRIP_PROGRAM])])
 
-# Copyright (C) 2006-2018 Free Software Foundation, Inc.
+# Copyright (C) 2006-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,
@@ -1763,7 +1849,7 @@ AC_DEFUN([AM_SUBST_NOTMAKE], [_AM_SUBST_NOTMAKE($@)])
 
 # Check how to create a tarball.                            -*- Autoconf -*-
 
-# Copyright (C) 2004-2018 Free Software Foundation, Inc.
+# Copyright (C) 2004-2020 Free Software Foundation, Inc.
 #
 # This file is free software; the Free Software Foundation
 # gives unlimited permission to copy and/or distribute it,

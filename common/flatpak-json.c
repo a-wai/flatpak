@@ -162,14 +162,14 @@ demarshal (JsonNode            *parent_node,
             /* Verify that all members are known properties if strict flag is set */
             for (l = members; l != NULL; l = l->next)
               {
-                const char *name = l->data;
+                const char *member_name = l->data;
                 for (i = 0; struct_props[i].name != NULL; i++)
                   {
-                    if (strcmp (struct_props[i].name, name) == 0)
+                    if (strcmp (struct_props[i].name, member_name) == 0)
                       break;
                   }
                 if (struct_props[i].name == NULL)
-                  return flatpak_fail (error, "Unknown property named %s", name);
+                  return flatpak_fail (error, "Unknown property named %s", member_name);
               }
           }
 
@@ -226,7 +226,6 @@ demarshal (JsonNode            *parent_node,
                     break;
                   }
               }
-
           }
 
         /* NULL terminate */
@@ -544,10 +543,13 @@ marshal (JsonObject          *parent,
               {
                 const char *key = _key;
                 const char *value = _value;
-                JsonNode *str = json_node_new (JSON_NODE_VALUE);
+                if (value != NULL)
+                  {
+                    JsonNode *str = json_node_new (JSON_NODE_VALUE);
 
-                json_node_set_string (str, value);
-                json_object_set_member (object, key, str);
+                    json_node_set_string (str, value);
+                    json_object_set_member (object, key, str);
+                  }
               }
 
             retval = json_node_init_object (json_node_alloc (), object);

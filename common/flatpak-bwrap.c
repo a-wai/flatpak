@@ -39,6 +39,7 @@
 
 #include "flatpak-bwrap-private.h"
 #include "flatpak-utils-private.h"
+#include "flatpak-utils-base-private.h"
 
 static void
 clear_fd (gpointer data)
@@ -106,6 +107,18 @@ void
 flatpak_bwrap_add_arg (FlatpakBwrap *bwrap, const char *arg)
 {
   g_ptr_array_add (bwrap->argv, g_strdup (arg));
+}
+
+/*
+ * flatpak_bwrap_take_arg:
+ * @arg: (transfer full): Take ownership of this argument
+ *
+ * Add @arg to @bwrap's argv, taking ownership of the pointer.
+ */
+void
+flatpak_bwrap_take_arg (FlatpakBwrap *bwrap, char *arg)
+{
+  g_ptr_array_add (bwrap->argv, arg);
 }
 
 void
@@ -273,6 +286,37 @@ flatpak_bwrap_add_bind_arg (FlatpakBwrap *bwrap,
     }
 }
 
+/*
+ * Convert bwrap->envp into a series of --setenv arguments for bwrap(1),
+ * assumed to be applied to an empty environment. Reset envp to be an
+ * empty environment.
+ */
+void
+flatpak_bwrap_envp_to_args (FlatpakBwrap *bwrap)
+{
+  gsize i;
+
+  for (i = 0; bwrap->envp[i] != NULL; i++)
+    {
+      char *key_val = bwrap->envp[i];
+      char *eq = strchr (key_val, '=');
+
+      if (eq)
+        {
+          flatpak_bwrap_add_arg (bwrap, "--setenv");
+          flatpak_bwrap_take_arg (bwrap, g_strndup (key_val, eq - key_val));
+          flatpak_bwrap_add_arg (bwrap, eq + 1);
+        }
+      else
+        {
+          g_warn_if_reached ();
+        }
+    }
+
+  g_strfreev (g_steal_pointer (&bwrap->envp));
+  bwrap->envp = g_strdupv (flatpak_bwrap_empty_env);
+}
+
 gboolean
 flatpak_bwrap_bundle_args (FlatpakBwrap *bwrap,
                            int           start,
@@ -285,7 +329,6 @@ flatpak_bwrap_bundle_args (FlatpakBwrap *bwrap,
   gint i;
   gsize data_len = 0;
   int fd;
-
   g_auto(GLnxTmpfile) args_tmpf  = { 0, };
 
   if (end == -1)
@@ -295,7 +338,6 @@ flatpak_bwrap_bundle_args (FlatpakBwrap *bwrap,
     data_len +=  strlen (bwrap->argv->pdata[i]) + 1;
 
   data = g_new (gchar, data_len);
-  *data = 0;
   ptr = data;
   for (i = start; i < end; i++)
     ptr = g_stpcpy (ptr, bwrap->argv->pdata[i]) + 1;
@@ -325,12 +367,14 @@ flatpak_bwrap_bundle_args (FlatpakBwrap *bwrap,
   return TRUE;
 }
 
-/* Unset FD_CLOEXEC on the array of fds passed in @user_data */
 void
-flatpak_bwrap_child_setup_cb (gpointer user_data)
+flatpak_bwrap_child_setup (GArray *fd_array,
+                           gboolean close_fd_workaround)
 {
-  GArray *fd_array = user_data;
   int i;
+
+  if (close_fd_workaround)
+    flatpak_close_fds_workaround (3);
 
   /* If no fd_array was specified, don't care. */
   if (fd_array == NULL)
@@ -350,4 +394,13 @@ flatpak_bwrap_child_setup_cb (gpointer user_data)
 
       fcntl (fd, F_SETFD, 0);
     }
+}
+
+/* Unset FD_CLOEXEC on the array of fds passed in @user_data */
+void
+flatpak_bwrap_child_setup_cb (gpointer user_data)
+{
+  GArray *fd_array = user_data;
+
+  flatpak_bwrap_child_setup (fd_array, TRUE);
 }

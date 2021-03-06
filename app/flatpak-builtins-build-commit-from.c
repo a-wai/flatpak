@@ -45,8 +45,13 @@ static gboolean opt_force;
 static char **opt_gpg_key_ids;
 static char *opt_gpg_homedir;
 static char *opt_endoflife;
+static char **opt_endoflife_rebase;
+static char **opt_endoflife_rebase_new;
+static char **opt_subsets;
 static char *opt_timestamp;
 static char **opt_extra_collection_ids;
+static int opt_token_type = -1;
+static gboolean opt_no_summary_index = FALSE;
 
 static GOptionEntry options[] = {
   { "src-repo", 0, 0, G_OPTION_ARG_STRING, &opt_src_repo, N_("Source repo dir"), N_("SRC-REPO") },
@@ -54,6 +59,7 @@ static GOptionEntry options[] = {
   { "untrusted", 0, 0, G_OPTION_ARG_NONE, &opt_untrusted, "Do not trust SRC-REPO", NULL },
   { "force", 0, 0, G_OPTION_ARG_NONE, &opt_force, "Always commit, even if same content", NULL },
   { "extra-collection-id", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_extra_collection_ids, "Add an extra collection id ref and binding", "COLLECTION-ID" },
+  { "subset", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_subsets, "Add to a named subset", "SUBSET" },
   { "subject", 's', 0, G_OPTION_ARG_STRING, &opt_subject, N_("One line subject"), N_("SUBJECT") },
   { "body", 'b', 0, G_OPTION_ARG_STRING, &opt_body, N_("Full description"), N_("BODY") },
   { "update-appstream", 0, 0, G_OPTION_ARG_NONE, &opt_update_appstream, N_("Update the appstream branch"), NULL },
@@ -61,8 +67,11 @@ static GOptionEntry options[] = {
   { "gpg-sign", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_gpg_key_ids, N_("GPG Key ID to sign the commit with"), N_("KEY-ID") },
   { "gpg-homedir", 0, 0, G_OPTION_ARG_STRING, &opt_gpg_homedir, N_("GPG Homedir to use when looking for keyrings"), N_("HOMEDIR") },
   { "end-of-life", 0, 0, G_OPTION_ARG_STRING, &opt_endoflife, N_("Mark build as end-of-life"), N_("REASON") },
+  { "end-of-life-rebase", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_endoflife_rebase, N_("Mark refs matching the OLDID prefix as end-of-life, to be replaced with the given NEWID"), N_("OLDID=NEWID") },
+  { "token-type", 0, 0, G_OPTION_ARG_INT, &opt_token_type, N_("Set type of token needed to install this commit"), N_("VAL") },
   { "timestamp", 0, 0, G_OPTION_ARG_STRING, &opt_timestamp, N_("Override the timestamp of the commit (NOW for current time)"), N_("TIMESTAMP") },
   { "disable-fsync", 0, 0, G_OPTION_ARG_NONE, &opt_disable_fsync, "Do not invoke fsync()", NULL },
+  { "no-summary-index", 0, 0, G_OPTION_ARG_NONE, &opt_no_summary_index, N_("Don't generate a summary index"), NULL },
   { NULL }
 };
 
@@ -217,6 +226,32 @@ rewrite_delta (OstreeRepo *src_repo,
   return TRUE;
 }
 
+static gboolean
+get_subsets (char **subsets, GVariant **out)
+{
+  g_autoptr(GVariantBuilder) builder = g_variant_builder_new (G_VARIANT_TYPE ("as"));
+  gboolean found = FALSE;
+
+  if (subsets == NULL)
+    return FALSE;
+
+  for (int i = 0; subsets[i] != NULL; i++)
+    {
+      const char *subset = subsets[i];
+      if (*subset != 0)
+        {
+          found = TRUE;
+          g_variant_builder_add (builder, "s", subset);
+        }
+    }
+
+  if (!found)
+    return FALSE;
+
+  *out = g_variant_ref_sink (g_variant_builder_end (builder));
+  return TRUE;
+}
+
 
 gboolean
 flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancellable, GError **error)
@@ -237,6 +272,7 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
   struct timespec ts;
   guint64 timestamp;
   int i;
+  const char *src_collection_id;
 
   context = g_option_context_new (_("DST-REPO [DST-REF…] - Make a new commit from existing commits"));
   g_option_context_set_translation_domain (context, GETTEXT_PACKAGE);
@@ -259,7 +295,36 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
     return usage_error (context, _("If --src-ref is specified, exactly one destination ref must be specified"), error);
 
   if (opt_src_repo == NULL && opt_src_ref == NULL)
-    return flatpak_fail (error, _("Either --src-repo or --src-ref must be specified."));
+    return flatpak_fail (error, _("Either --src-repo or --src-ref must be specified"));
+
+  /* Always create a commit if we're eol:ing, even though the app is the same */
+  if (opt_endoflife != NULL || opt_endoflife_rebase != NULL)
+    opt_force = TRUE;
+
+  if (opt_endoflife_rebase)
+    {
+      opt_endoflife_rebase_new = g_new0 (char *, g_strv_length (opt_endoflife_rebase));
+
+      for (i = 0; opt_endoflife_rebase[i] != NULL; i++)
+        {
+          char *rebase_old = opt_endoflife_rebase[i];
+          char *rebase_new = strchr (rebase_old, '=');
+
+          if (rebase_new == NULL) {
+            return usage_error (context, _("Invalid argument format of use  --end-of-life-rebase=OLDID=NEWID"), error);
+          }
+          *rebase_new = 0;
+          rebase_new++;
+
+          if (!flatpak_is_valid_name (rebase_old, -1, error))
+            return glnx_prefix_error (error, _("Invalid name %s in --end-of-life-rebase"), rebase_old);
+
+          if (!flatpak_is_valid_name (rebase_new, -1, error))
+            return glnx_prefix_error (error, _("Invalid name %s in --end-of-life-rebase"), rebase_new);
+
+          opt_endoflife_rebase_new[i] = rebase_new;
+        }
+    }
 
   if (opt_timestamp)
     {
@@ -330,13 +395,15 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
         }
     }
 
+  src_collection_id = ostree_repo_get_collection_id (src_repo);
   resolved_src_refs = g_ptr_array_new_with_free_func (g_free);
   for (i = 0; i < src_refs->len; i++)
     {
       const char *src_ref = g_ptr_array_index (src_refs, i);
       char *resolved_ref;
 
-      if (!ostree_repo_resolve_rev (src_repo, src_ref, FALSE, &resolved_ref, error))
+      if (!flatpak_repo_resolve_rev (src_repo, src_collection_id, NULL, src_ref, FALSE,
+                                     &resolved_ref, cancellable, error))
         return FALSE;
 
       g_ptr_array_add (resolved_src_refs, resolved_ref);
@@ -346,9 +413,9 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
     {
       OstreeRepoPullFlags pullflags = 0;
       GVariantBuilder builder;
-      g_autoptr(OstreeAsyncProgress) progress = NULL;
+      g_autoptr(OstreeAsyncProgressFinish) progress = NULL;
       g_auto(GLnxConsoleRef) console = { 0, };
-      g_autoptr(GVariant) options = NULL;
+      g_autoptr(GVariant) pull_options = NULL;
       gboolean res;
 
       if (opt_untrusted)
@@ -367,14 +434,11 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
       g_variant_builder_add (&builder, "{s@v}", "depth",
                              g_variant_new_variant (g_variant_new_int32 (0)));
 
-      options = g_variant_ref_sink (g_variant_builder_end (&builder));
+      pull_options = g_variant_ref_sink (g_variant_builder_end (&builder));
       res = ostree_repo_pull_with_options (dst_repo, src_repo_uri,
-                                           options,
+                                           pull_options,
                                            progress,
                                            cancellable, error);
-
-      if (progress)
-        ostree_async_progress_finish (progress);
 
       if (!res)
         return FALSE;
@@ -399,6 +463,7 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
       g_autoptr(GFile) src_ref_root = NULL;
       g_autoptr(GVariant) src_commitv = NULL;
       g_autoptr(GVariant) dst_commitv = NULL;
+      g_autoptr(GVariant) subsets_v = NULL;
       g_autoptr(OstreeMutableTree) mtree = NULL;
       g_autoptr(GFile) dst_root = NULL;
       g_autoptr(GVariant) commitv_metadata = NULL;
@@ -412,7 +477,10 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
       const char *main_collection_id = NULL;
       g_autoptr(GPtrArray) collection_ids = NULL;
 
-      if (!ostree_repo_resolve_rev (dst_repo, dst_ref, TRUE, &dst_parent, error))
+      dst_collection_id = ostree_repo_get_collection_id (dst_repo);
+
+      if (!flatpak_repo_resolve_rev (dst_repo, dst_collection_id, NULL, dst_ref, TRUE,
+                                     &dst_parent, cancellable, error))
         return FALSE;
 
       if (dst_parent != NULL &&
@@ -426,7 +494,7 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
         return FALSE;
 
       if (src_commit_state & OSTREE_REPO_COMMIT_STATE_PARTIAL)
-        return flatpak_fail (error, _("Can't commit from partial source commit."));
+        return flatpak_fail (error, _("Can't commit from partial source commit"));
 
       /* Don't create a new commit if this is the same tree */
       if (!opt_force && dst_parent_root != NULL && g_file_equal (dst_parent_root, src_ref_root))
@@ -452,8 +520,6 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
       if (opt_body)
         body = (const char *) opt_body;
 
-      dst_collection_id = ostree_repo_get_collection_id (dst_repo);
-
       collection_ids = g_ptr_array_new_with_free_func (g_free);
       if (dst_collection_id)
         {
@@ -474,7 +540,7 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
             }
         }
 
-      g_ptr_array_sort (collection_ids, (GCompareFunc)flatpak_strcmp0_ptr);
+      g_ptr_array_sort (collection_ids, (GCompareFunc) flatpak_strcmp0_ptr);
 
       /* Copy old metadata */
       g_variant_builder_init (&metadata_builder, G_VARIANT_TYPE ("a{sv}"));
@@ -502,6 +568,17 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
          (signatures) */
       g_variant_builder_add (&metadata_builder, "{sv}", "xa.from_commit", g_variant_new_string (resolved_ref));
 
+      if (opt_src_repo)
+        {
+          guint64 download_size;
+          if (!flatpak_repo_collect_sizes (dst_repo, src_ref_root, NULL, &download_size,
+                                           cancellable, error))
+            {
+              return FALSE;
+            }
+          g_variant_builder_add (&metadata_builder, "{sv}", "xa.download-size", g_variant_new_uint64 (GUINT64_TO_BE (download_size)));
+        }
+
       for (j = 0; j < g_variant_n_children (commitv_metadata); j++)
         {
           g_autoptr(GVariant) child = g_variant_get_child_value (commitv_metadata, j);
@@ -515,8 +592,21 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
               strcmp (key, "ostree.ref-binding") == 0)
             continue;
 
+          if (opt_src_repo && strcmp (key, "xa.download-size") == 0)
+            continue;
+
           if (opt_endoflife &&
               strcmp (key, OSTREE_COMMIT_META_KEY_ENDOFLIFE) == 0)
+            continue;
+
+          if (opt_endoflife_rebase &&
+              strcmp (key, OSTREE_COMMIT_META_KEY_ENDOFLIFE_REBASE) == 0)
+            continue;
+
+          if (opt_token_type >= 0 && strcmp (key, "xa.token-type") == 0)
+            continue;
+
+          if (opt_subsets != NULL && strcmp (key, "xa.subsets") == 0)
             continue;
 
           g_variant_builder_add_value (&metadata_builder, child);
@@ -525,6 +615,34 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
       if (opt_endoflife && *opt_endoflife)
         g_variant_builder_add (&metadata_builder, "{sv}", OSTREE_COMMIT_META_KEY_ENDOFLIFE,
                                g_variant_new_string (opt_endoflife));
+
+      if (opt_endoflife_rebase)
+        {
+          g_auto(GStrv) dst_ref_parts = g_strsplit (dst_ref, "/", 0);
+
+          for (j = 0; opt_endoflife_rebase[j] != NULL; j++)
+            {
+              const char *old_prefix = opt_endoflife_rebase[j];
+
+              if (flatpak_has_name_prefix (dst_ref_parts[1], old_prefix))
+                {
+                  g_autofree char *new_id = g_strconcat (opt_endoflife_rebase_new[j], dst_ref_parts[1] + strlen(old_prefix), NULL);
+                  g_autofree char *rebased_ref = g_build_filename (dst_ref_parts[0], new_id, dst_ref_parts[2], dst_ref_parts[3], NULL);
+
+                  g_variant_builder_add (&metadata_builder, "{sv}", OSTREE_COMMIT_META_KEY_ENDOFLIFE_REBASE,
+                                         g_variant_new_string (rebased_ref));
+                  break;
+                }
+            }
+        }
+
+      if (opt_token_type >= 0)
+        g_variant_builder_add (&metadata_builder, "{sv}", "xa.token-type",
+                               g_variant_new_int32 (GINT32_TO_LE (opt_token_type)));
+
+      /* Skip "" subsets as they mean everything. This way --subsets= causes old subsets to be stripped from the original commit */
+      if (get_subsets (opt_subsets, &subsets_v))
+        g_variant_builder_add (&metadata_builder, "{sv}", "xa.subsets", subsets_v);
 
       timestamp = ostree_commit_get_timestamp (src_commitv);
       if (opt_timestamp)
@@ -591,7 +709,7 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
       /* Copy + Rewrite any deltas */
       {
         const char *from[2];
-        gsize j, n_from = 0;
+        gsize n_from = 0;
 
         if (dst_parent != NULL)
           from[n_from++] = dst_parent;
@@ -613,13 +731,21 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
       !flatpak_repo_generate_appstream (dst_repo, (const char **) opt_gpg_key_ids, opt_gpg_homedir, 0, cancellable, error))
     return FALSE;
 
-  if (!opt_no_update_summary &&
-      !flatpak_repo_update (dst_repo,
-                            (const char **) opt_gpg_key_ids,
-                            opt_gpg_homedir,
-                            cancellable,
-                            error))
-    return FALSE;
+  if (!opt_no_update_summary)
+    {
+      FlatpakRepoUpdateFlags flags = FLATPAK_REPO_UPDATE_FLAG_NONE;
+
+      if (opt_no_summary_index)
+        flags |= FLATPAK_REPO_UPDATE_FLAG_DISABLE_INDEX;
+
+      g_debug ("Updating summary");
+      if (!flatpak_repo_update (dst_repo, flags,
+                                (const char **) opt_gpg_key_ids,
+                                opt_gpg_homedir,
+                                cancellable,
+                                error))
+        return FALSE;
+    }
 
   return TRUE;
 }

@@ -51,11 +51,11 @@ remote_dir_pair_new (const char *remote_name, FlatpakDir *dir)
 }
 
 RefDirPair *
-ref_dir_pair_new (const char *ref, FlatpakDir *dir)
+ref_dir_pair_new (FlatpakDecomposed *ref, FlatpakDir *dir)
 {
   RefDirPair *pair = g_new (RefDirPair, 1);
 
-  pair->ref = g_strdup (ref);
+  pair->ref = flatpak_decomposed_ref (ref);
   pair->dir = g_object_ref (dir);
   return pair;
 }
@@ -63,10 +63,11 @@ ref_dir_pair_new (const char *ref, FlatpakDir *dir)
 void
 ref_dir_pair_free (RefDirPair *pair)
 {
-  g_free (pair->ref);
+  flatpak_decomposed_unref (pair->ref);
   g_object_unref (pair->dir);
   g_free (pair);
 }
+
 
 gboolean
 looks_like_branch (const char *branch)
@@ -76,11 +77,11 @@ looks_like_branch (const char *branch)
   /* In particular, / is not a valid branch char, so
      this lets us distinguish full or partial refs as
      non-branches. */
-  if (!flatpak_is_valid_branch (branch, NULL))
+  if (!flatpak_is_valid_branch (branch, -1, NULL))
     return FALSE;
 
   /* Dots are allowed in branches, but not really used much, while
-     app ids require at least two, so thats a good check to
+     app ids require at least two, so that's a good check to
      distinguish the two */
   dot = strchr (branch, '.');
   if (dot != NULL)
@@ -92,81 +93,17 @@ looks_like_branch (const char *branch)
   return TRUE;
 }
 
-static SoupSession *
-get_soup_session (void)
-{
-  static SoupSession *soup_session = NULL;
-
-  if (soup_session == NULL)
-    {
-      const char *http_proxy;
-
-      soup_session = soup_session_new_with_options (SOUP_SESSION_USER_AGENT, "flatpak-builder ",
-                                                    SOUP_SESSION_SSL_USE_SYSTEM_CA_FILE, TRUE,
-                                                    SOUP_SESSION_USE_THREAD_CONTEXT, TRUE,
-                                                    SOUP_SESSION_TIMEOUT, 60,
-                                                    SOUP_SESSION_IDLE_TIMEOUT, 60,
-                                                    NULL);
-      http_proxy = g_getenv ("http_proxy");
-      if (http_proxy)
-        {
-          g_autoptr(SoupURI) proxy_uri = soup_uri_new (http_proxy);
-          if (!proxy_uri)
-            g_warning ("Invalid proxy URI '%s'", http_proxy);
-          else
-            g_object_set (soup_session, SOUP_SESSION_PROXY_URI, proxy_uri, NULL);
-        }
-    }
-
-  return soup_session;
-}
-
-GBytes *
-download_uri (const char *url,
-              GError    **error)
-{
-  SoupSession *session;
-
-  g_autoptr(SoupRequest) req = NULL;
-  g_autoptr(GInputStream) input = NULL;
-  g_autoptr(GOutputStream) out = NULL;
-
-  session = get_soup_session ();
-
-  req = soup_session_request (session, url, error);
-  if (req == NULL)
-    return NULL;
-
-  input = soup_request_send (req, NULL, error);
-  if (input == NULL)
-    return NULL;
-
-  out = g_memory_output_stream_new_resizable ();
-  if (!g_output_stream_splice (out,
-                               input,
-                               G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET | G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE,
-                               NULL,
-                               error))
-    return NULL;
-
-  return g_memory_output_stream_steal_as_bytes (G_MEMORY_OUTPUT_STREAM (out));
-}
-
 FlatpakDir *
 flatpak_find_installed_pref (const char *pref, FlatpakKinds kinds, const char *default_arch, const char *default_branch,
                              gboolean search_all, gboolean search_user, gboolean search_system, char **search_installations,
-                             char **out_ref, GCancellable *cancellable, GError **error)
+                             FlatpakDecomposed **out_ref, GCancellable *cancellable, GError **error)
 {
   g_autofree char *id = NULL;
   g_autofree char *arch = NULL;
   g_autofree char *branch = NULL;
-
   g_autoptr(GError) lookup_error = NULL;
-  FlatpakDir *dir = NULL;
-  g_autofree char *ref = NULL;
-  FlatpakKinds kind = 0;
-  g_autoptr(FlatpakDir) user_dir = NULL;
-  g_autoptr(FlatpakDir) system_dir = NULL;
+  g_autoptr(FlatpakDecomposed) ref = NULL;
+  g_autoptr(FlatpakDir) dir = NULL;
   g_autoptr(GPtrArray) system_dirs = NULL;
 
   if (!flatpak_split_partial_ref_arg (pref, kinds, default_arch, default_branch,
@@ -175,16 +112,14 @@ flatpak_find_installed_pref (const char *pref, FlatpakKinds kinds, const char *d
 
   if (search_user || search_all)
     {
-      user_dir = flatpak_dir_get_user ();
+      g_autoptr(FlatpakDir) user_dir = flatpak_dir_get_user ();
 
       ref = flatpak_dir_find_installed_ref (user_dir,
-                                            id,
-                                            branch,
-                                            arch,
-                                            kinds, &kind,
+                                            id, branch, arch,
+                                            kinds,
                                             &lookup_error);
       if (ref)
-        dir = user_dir;
+        dir = g_steal_pointer (&user_dir);
 
       if (g_error_matches (lookup_error, G_IO_ERROR, G_IO_ERROR_FAILED))
         {
@@ -208,14 +143,12 @@ flatpak_find_installed_pref (const char *pref, FlatpakKinds kinds, const char *d
           g_clear_error (&lookup_error);
 
           ref = flatpak_dir_find_installed_ref (system_dir,
-                                                id,
-                                                branch,
-                                                arch,
-                                                kinds, &kind,
+                                                id, branch, arch,
+                                                kinds,
                                                 &lookup_error);
           if (ref)
             {
-              dir = system_dir;
+              dir = g_object_ref (system_dir);
               break;
             }
 
@@ -245,14 +178,12 @@ flatpak_find_installed_pref (const char *pref, FlatpakKinds kinds, const char *d
                   g_clear_error (&lookup_error);
 
                   ref = flatpak_dir_find_installed_ref (installation_dir,
-                                                        id,
-                                                        branch,
-                                                        arch,
-                                                        kinds, &kind,
+                                                        id, branch, arch,
+                                                        kinds,
                                                         &lookup_error);
                   if (ref)
                     {
-                      dir = installation_dir;
+                      dir = g_steal_pointer (&installation_dir);
                       break;
                     }
 
@@ -267,19 +198,17 @@ flatpak_find_installed_pref (const char *pref, FlatpakKinds kinds, const char *d
 
       if (ref == NULL && search_system)
         {
-          system_dir = flatpak_dir_get_system_default ();
+          g_autoptr(FlatpakDir) system_dir = flatpak_dir_get_system_default ();
 
           g_clear_error (&lookup_error);
 
           ref = flatpak_dir_find_installed_ref (system_dir,
-                                                id,
-                                                branch,
-                                                arch,
-                                                kinds, &kind,
+                                                id, branch, arch,
+                                                kinds,
                                                 &lookup_error);
 
           if (ref)
-            dir = system_dir;
+            dir = g_steal_pointer (&system_dir);
         }
     }
 
@@ -290,7 +219,7 @@ flatpak_find_installed_pref (const char *pref, FlatpakKinds kinds, const char *d
     }
 
   *out_ref = g_steal_pointer (&ref);
-  return g_object_ref (dir);
+  return g_steal_pointer (&dir);
 }
 
 
@@ -408,7 +337,7 @@ flatpak_resolve_duplicate_remotes (GPtrArray    *dirs,
           FlatpakDir *dir = g_ptr_array_index (dirs_with_remote, i);
           names[i] = flatpak_dir_get_name (dir);
         }
-      flatpak_format_choices ((const char **)names,
+      flatpak_format_choices ((const char **) names,
                               _("Remote ‘%s’ found in multiple installations:"), remote_name);
       chosen = flatpak_number_prompt (TRUE, 0, dirs_with_remote->len, _("Which do you want to use (0 to abort)?"));
       if (chosen == 0)
@@ -418,8 +347,19 @@ flatpak_resolve_duplicate_remotes (GPtrArray    *dirs,
   if (out_dir)
     {
       if (dirs_with_remote->len == 0)
-        return flatpak_fail_error (error, FLATPAK_ERROR_REMOTE_NOT_FOUND,
-                                   "Remote \"%s\" not found", remote_name);
+        {
+          if (dirs->len > 1 || dirs->len == 0)
+            return flatpak_fail_error (error, FLATPAK_ERROR_REMOTE_NOT_FOUND,
+                                       _("Remote \"%s\" not found\nHint: Use flatpak remote-add to add a remote"),
+                                       remote_name);
+          else
+            {
+              FlatpakDir *dir = g_ptr_array_index (dirs, 0);
+              return flatpak_fail_error (error, FLATPAK_ERROR_REMOTE_NOT_FOUND,
+                                         _("Remote \"%s\" not found in the %s installation"),
+                                         remote_name, flatpak_dir_get_name_cached (dir));
+            }
+        }
       else
         *out_dir = g_object_ref (g_ptr_array_index (dirs_with_remote, chosen - 1));
     }
@@ -427,34 +367,46 @@ flatpak_resolve_duplicate_remotes (GPtrArray    *dirs,
   return TRUE;
 }
 
+static char **
+decomposed_refs_to_strv (GPtrArray *decomposed)
+{
+  GPtrArray *res = g_ptr_array_new ();
+  for (int i = 0; i < decomposed->len; i++)
+    {
+      FlatpakDecomposed *ref = g_ptr_array_index (decomposed, i);
+      g_ptr_array_add (res, flatpak_decomposed_dup_ref (ref));
+    }
+  g_ptr_array_add (res, NULL);
+
+  return (char **) g_ptr_array_free (res, FALSE);
+}
+
 gboolean
-flatpak_resolve_matching_refs (const char   *remote_name,
-                               FlatpakDir   *dir,
-                               gboolean      disable_interaction,
-                               char        **refs,
-                               const char   *opt_search_ref,
-                               char        **out_ref,
-                               GError      **error)
+flatpak_resolve_matching_refs (const char *remote_name,
+                               FlatpakDir *dir,
+                               gboolean    assume_yes,
+                               GPtrArray  *refs,
+                               const char *opt_search_ref,
+                               char      **out_ref,
+                               GError    **error)
 {
   guint chosen = 0;
-  guint refs_len;
 
-  refs_len = g_strv_length (refs);
-  g_assert (refs_len > 0);
+  g_assert (refs->len > 0);
 
   /* When there's only one match, we only choose it without user interaction if
    * either the --assume-yes option was used or it's an exact match
    */
-  if (refs_len == 1)
+  if (refs->len == 1)
     {
-      if (disable_interaction)
+      if (assume_yes)
         chosen = 1;
       else
         {
-          g_auto(GStrv) parts = NULL;
-          parts = flatpak_decompose_ref (refs[0], NULL);
-          g_assert (parts != NULL);
-          if (opt_search_ref != NULL && strcmp (parts[1], opt_search_ref) == 0)
+          FlatpakDecomposed *ref = g_ptr_array_index (refs, 0);
+          g_autofree char *id = flatpak_decomposed_dup_id (ref);
+
+          if (opt_search_ref != NULL && strcmp (id, opt_search_ref) == 0)
             chosen = 1;
         }
     }
@@ -462,38 +414,59 @@ flatpak_resolve_matching_refs (const char   *remote_name,
   if (chosen == 0)
     {
       const char *dir_name = flatpak_dir_get_name_cached (dir);
-      if (refs_len == 1)
+      if (refs->len == 1)
         {
+          FlatpakDecomposed *ref = g_ptr_array_index (refs, 0);
           if (flatpak_yes_no_prompt (TRUE, /* default to yes on Enter */
                                      _("Found ref ‘%s’ in remote ‘%s’ (%s).\nUse this ref?"),
-                                     refs[0], remote_name, dir_name))
+                                     flatpak_decomposed_get_ref (ref), remote_name, dir_name))
             chosen = 1;
           else
             return flatpak_fail (error, _("No ref chosen to resolve matches for ‘%s’"), opt_search_ref);
         }
       else
         {
-          flatpak_format_choices ((const char **)refs,
+          g_auto(GStrv) refs_str = decomposed_refs_to_strv (refs);
+          flatpak_format_choices ((const char **) refs_str,
                                   _("Similar refs found for ‘%s’ in remote ‘%s’ (%s):"),
                                   opt_search_ref, remote_name, dir_name);
-          chosen = flatpak_number_prompt (TRUE, 0, refs_len, _("Which do you want to use (0 to abort)?"));
+          chosen = flatpak_number_prompt (TRUE, 0, refs->len, _("Which do you want to use (0 to abort)?"));
           if (chosen == 0)
             return flatpak_fail (error, _("No ref chosen to resolve matches for ‘%s’"), opt_search_ref);
         }
     }
 
   if (out_ref)
-    *out_ref = g_strdup (refs[chosen - 1]);
+    {
+      FlatpakDecomposed *ref = g_ptr_array_index (refs, chosen - 1);
+      *out_ref = flatpak_decomposed_dup_ref (ref);
+    }
 
   return TRUE;
 }
 
+/**
+ * flatpak_resolve_matching_installed_refs:
+ * @assume_yes: If set and @ref_dir_pairs contains only one match it will be
+ *  chosen without user interaction even if it's not an exact match
+ * @only_one: If set, only allow the user to choose one option (e.g. not a
+ *  range or all of the above)
+ * @ref_dir_pairs: (element-type #RefDirPair): the ref-dir pairs to choose from
+ * @out_pairs: (element-type #RefDirPair): an array to which the user's choices
+ *  will be added
+ *
+ * Prompts the user to choose between @ref_dir_pairs and add the chosen ones to @out_pairs.
+ *
+ * Returns: %TRUE if a choice was made, either by the user or automatically,
+ *   and %FALSE otherwise with @error set
+ */
 gboolean
-flatpak_resolve_matching_installed_refs (gboolean     disable_interaction,
-                                         GPtrArray   *ref_dir_pairs,
-                                         const char  *opt_search_ref,
-                                         GPtrArray   *out_pairs,
-                                         GError     **error)
+flatpak_resolve_matching_installed_refs (gboolean    assume_yes,
+                                         gboolean    only_one,
+                                         GPtrArray  *ref_dir_pairs,
+                                         const char *opt_search_ref,
+                                         GPtrArray  *out_pairs,
+                                         GError    **error)
 {
   guint chosen = 0;
   g_autofree int *choices = NULL;
@@ -506,15 +479,13 @@ flatpak_resolve_matching_installed_refs (gboolean     disable_interaction,
    */
   if (ref_dir_pairs->len == 1)
     {
-      if (disable_interaction)
+      if (assume_yes)
         chosen = 1;
       else
         {
           RefDirPair *pair = g_ptr_array_index (ref_dir_pairs, 0);
-          g_auto(GStrv) parts = NULL;
-          parts = flatpak_decompose_ref (pair->ref, NULL);
-          g_assert (parts != NULL);
-          if (opt_search_ref != NULL && strcmp (parts[1], opt_search_ref) == 0)
+          g_autofree char *id = flatpak_decomposed_dup_id (pair->ref);
+          if (opt_search_ref != NULL && strcmp (id, opt_search_ref) == 0)
             chosen = 1;
         }
     }
@@ -532,24 +503,30 @@ flatpak_resolve_matching_installed_refs (gboolean     disable_interaction,
           const char *dir_name = flatpak_dir_get_name_cached (pair->dir);
           if (flatpak_yes_no_prompt (TRUE, /* default to yes on Enter */
                                      _("Found installed ref ‘%s’ (%s). Is this correct?"),
-                                     pair->ref, dir_name))
+                                     flatpak_decomposed_get_ref (pair->ref), dir_name))
             chosen = 1;
           else
             return flatpak_fail (error, _("No ref chosen to resolve matches for ‘%s’"), opt_search_ref);
         }
       else
         {
-          int len = ref_dir_pairs->len + 1;
+          int len = ref_dir_pairs->len + (only_one ? 0 : 1);
           g_auto(GStrv) names = g_new0 (char *, len + 1);
           for (i = 0; i < ref_dir_pairs->len; i++)
             {
               RefDirPair *pair = g_ptr_array_index (ref_dir_pairs, i);
-              names[i] = g_strdup_printf ("%s (%s)", pair->ref, flatpak_dir_get_name_cached (pair->dir));
+              names[i] = g_strdup_printf ("%s (%s)", flatpak_decomposed_get_ref (pair->ref), flatpak_dir_get_name_cached (pair->dir));
             }
-          names[i] = g_strdup_printf (_("All of the above"));
-          flatpak_format_choices ((const char **)names, _("Similar installed refs found for ‘%s’:"), opt_search_ref);
-          choices = flatpak_numbers_prompt (TRUE, 0, len, _("Which do you want to use (0 to abort)?"));
-          if (choices[0] == 0)
+          if (!only_one)
+            names[i] = g_strdup_printf (_("All of the above"));
+          flatpak_format_choices ((const char **) names, _("Similar installed refs found for ‘%s’:"), opt_search_ref);
+
+          if (only_one)
+            chosen = flatpak_number_prompt (TRUE, 0, len, _("Which do you want to use (0 to abort)?"));
+          else
+            choices = flatpak_numbers_prompt (TRUE, 0, len, _("Which do you want to use (0 to abort)?"));
+
+          if ((only_one && chosen == 0) || (!only_one && choices[0] == 0))
             return flatpak_fail (error, _("No ref chosen to resolve matches for ‘%s’"), opt_search_ref);
         }
     }
@@ -566,7 +543,7 @@ flatpak_resolve_matching_installed_refs (gboolean     disable_interaction,
             }
           else
             g_ptr_array_add (out_pairs, g_ptr_array_index (ref_dir_pairs, chosen - 1));
-       }
+        }
     }
   else
     g_ptr_array_add (out_pairs, g_ptr_array_index (ref_dir_pairs, chosen - 1));
@@ -575,7 +552,7 @@ flatpak_resolve_matching_installed_refs (gboolean     disable_interaction,
 }
 
 gboolean
-flatpak_resolve_matching_remotes (gboolean        disable_interaction,
+flatpak_resolve_matching_remotes (gboolean        assume_yes,
                                   GPtrArray      *remote_dir_pairs,
                                   const char     *opt_search_ref,
                                   RemoteDirPair **out_pair,
@@ -586,7 +563,7 @@ flatpak_resolve_matching_remotes (gboolean        disable_interaction,
 
   g_assert (remote_dir_pairs->len > 0);
 
-  if (disable_interaction && remote_dir_pairs->len == 1)
+  if (assume_yes && remote_dir_pairs->len == 1)
     chosen = 1;
 
   if (chosen == 0)
@@ -610,7 +587,7 @@ flatpak_resolve_matching_remotes (gboolean        disable_interaction,
               RemoteDirPair *pair = g_ptr_array_index (remote_dir_pairs, i);
               names[i] = g_strdup_printf ("‘%s’ (%s)", pair->remote_name, flatpak_dir_get_name_cached (pair->dir));
             }
-          flatpak_format_choices ((const char **)names, _("Remotes found with refs similar to ‘%s’:"), opt_search_ref);
+          flatpak_format_choices ((const char **) names, _("Remotes found with refs similar to ‘%s’:"), opt_search_ref);
           chosen = flatpak_number_prompt (TRUE, 0, remote_dir_pairs->len, _("Which do you want to use (0 to abort)?"));
           if (chosen == 0)
             return flatpak_fail (error, _("No remote chosen to resolve matches for ‘%s’"), opt_search_ref);
@@ -629,7 +606,6 @@ get_file_age (GFile *file)
 {
   guint64 now;
   guint64 mtime;
-
   g_autoptr(GFileInfo) info = NULL;
 
   info = g_file_query_info (file,
@@ -646,11 +622,6 @@ get_file_age (GFile *file)
     return G_MAXUINT64;
 
   return (guint64) (now - mtime);
-}
-
-static void
-no_progress_cb (OstreeAsyncProgress *progress, gpointer user_data)
-{
 }
 
 static guint64
@@ -679,7 +650,6 @@ update_appstream (GPtrArray    *dirs,
                   GError      **error)
 {
   gboolean changed;
-  gboolean res;
   int i, j;
 
   g_return_val_if_fail (dirs != NULL, FALSE);
@@ -701,7 +671,6 @@ update_appstream (GPtrArray    *dirs,
           for (i = 0; remotes[i] != NULL; i++)
             {
               g_autoptr(GError) local_error = NULL;
-              g_autoptr(OstreeAsyncProgress) progress = NULL;
               guint64 ts_file_age;
 
               ts_file_age = get_appstream_timestamp (dir, remotes[i], arch);
@@ -737,16 +706,14 @@ update_appstream (GPtrArray    *dirs,
                       g_print ("\n");
                     }
                 }
-              progress = ostree_async_progress_new_and_connect (no_progress_cb, NULL);
               if (!flatpak_dir_update_appstream (dir, remotes[i], arch, &changed,
-                                                 progress, cancellable, &local_error))
+                                                 NULL, cancellable, &local_error))
                 {
                   if (quiet)
                     g_debug ("%s: %s", _("Error updating"), local_error->message);
                   else
                     g_printerr ("%s: %s\n", _("Error updating"), local_error->message);
                 }
-              ostree_async_progress_finish (progress);
             }
         }
     }
@@ -760,7 +727,6 @@ update_appstream (GPtrArray    *dirs,
 
           if (flatpak_dir_has_remote (dir, remote, NULL))
             {
-              g_autoptr(OstreeAsyncProgress) progress = NULL;
               guint64 ts_file_age;
 
               found = TRUE;
@@ -774,11 +740,8 @@ update_appstream (GPtrArray    *dirs,
               else
                 g_debug ("%s:%s appstream age %" G_GUINT64_FORMAT " is greater than ttl %" G_GUINT64_FORMAT, remote, arch, ts_file_age, ttl);
 
-              progress = ostree_async_progress_new_and_connect (no_progress_cb, NULL);
-              res = flatpak_dir_update_appstream (dir, remote, arch, &changed,
-                                                  progress, cancellable, error);
-              ostree_async_progress_finish (progress);
-              if (!res)
+              if (!flatpak_dir_update_appstream (dir, remote, arch, &changed,
+                                                 NULL, cancellable, error))
                 return FALSE;
             }
         }
@@ -820,9 +783,9 @@ get_permission_tables (XdpDbusPermissionStore *store)
 /*** column handling ***/
 
 static gboolean
-parse_ellipsize_suffix (const char *p,
+parse_ellipsize_suffix (const char           *p,
                         FlatpakEllipsizeMode *mode,
-                        GError **error)
+                        GError              **error)
 {
   if (g_str_equal (":", p))
     {
@@ -851,9 +814,9 @@ parse_ellipsize_suffix (const char *p,
 }
 
 int
-find_column (Column *columns,
+find_column (Column     *columns,
              const char *name,
-             GError **error)
+             GError    **error)
 {
   int i;
   int candidate;
@@ -894,9 +857,9 @@ find_column (Column *columns,
 }
 
 static Column *
-column_filter (Column *columns,
+column_filter (Column     *columns,
                const char *col_arg,
-               GError **error)
+               GError    **error)
 {
   g_auto(GStrv) cols = g_strsplit (col_arg, ",", 0);
   int n_cols = g_strv_length (cols);
@@ -960,8 +923,8 @@ column_help (Column *columns)
   g_string_append_printf (s, "  %-*s %s\n", len, "all", _("Show all columns"));
   g_string_append_printf (s, "  %-*s %s\n", len, "help", _("Show available columns"));
 
-  g_string_append_printf  (s, "\n%s\n",
-                    _("Append :s[tart], :m[iddle], :e[nd] or :f[ull] to change ellipsization"));
+  g_string_append_printf (s, "\n%s\n",
+                          _("Append :s[tart], :m[iddle], :e[nd] or :f[ull] to change ellipsization"));
   return g_string_free (s, FALSE);
 }
 
@@ -970,10 +933,10 @@ column_help (Column *columns)
  * opt_cols should correspond to --columns
  */
 Column *
-handle_column_args (Column *all_columns,
-                    gboolean opt_show_all,
+handle_column_args (Column      *all_columns,
+                    gboolean     opt_show_all,
                     const char **opt_cols,
-                    GError **error)
+                    GError     **error)
 {
   g_autofree char *cols = NULL;
   gboolean show_help = FALSE;
@@ -996,11 +959,11 @@ handle_column_args (Column *all_columns,
     {
       g_autofree char *col_help = column_help (all_columns);
       g_print ("%s", col_help);
-      return g_new0 (Column, 1); 
+      return g_new0 (Column, 1);
     }
 
   if (opt_cols && !show_all)
-    cols = g_strjoinv (",", (char**)opt_cols);
+    cols = g_strjoinv (",", (char **) opt_cols);
   else
     {
       GString *s;
@@ -1014,7 +977,7 @@ handle_column_args (Column *all_columns,
         }
       cols = g_string_free (s, FALSE);
     }
-    
+
   return column_filter (all_columns, cols, error);
 }
 
@@ -1120,7 +1083,7 @@ as_app_get_version (AsApp *app)
 }
 
 AsApp *
-as_store_find_app (AsStore *store,
+as_store_find_app (AsStore    *store,
                    const char *ref)
 {
   g_autoptr(FlatpakRef) rref = flatpak_ref_parse (ref, NULL);
@@ -1128,21 +1091,18 @@ as_store_find_app (AsStore *store,
   g_autofree char *desktopid = g_strconcat (appid, ".desktop", NULL);
   int j;
 
-  g_debug ("Looking for AsApp for '%s'", ref);
-
   for (j = 0; j < 2; j++)
     {
       const char *id = j == 0 ? appid : desktopid;
       g_autoptr(GPtrArray) apps = as_store_get_apps_by_id (store, id);
       int i;
 
-      g_debug ("sifting through %d apps for %s", apps->len, id);
       for (i = 0; i < apps->len; i++)
         {
           AsApp *app = g_ptr_array_index (apps, i);
           AsBundle *bundle = as_app_get_bundle_default (app);
           if (bundle &&
-#if AS_CHECK_VERSION(0,5,15)
+#if AS_CHECK_VERSION (0, 5, 15)
               as_bundle_get_kind (bundle) == AS_BUNDLE_KIND_FLATPAK &&
 #endif
               g_str_equal (as_bundle_get_id (bundle), ref))
@@ -1172,12 +1132,12 @@ as_store_find_app (AsStore *store,
  *    otherwise
  */
 gboolean
-flatpak_dir_load_appstream_store (FlatpakDir    *self,
-                                  const gchar   *remote_name,
-                                  const gchar   *arch,
-                                  AsStore       *store,
-                                  GCancellable  *cancellable,
-                                  GError       **error)
+flatpak_dir_load_appstream_store (FlatpakDir   *self,
+                                  const gchar  *remote_name,
+                                  const gchar  *arch,
+                                  AsStore      *store,
+                                  GCancellable *cancellable,
+                                  GError      **error)
 {
   const char *install_path = flatpak_file_get_path_cached (flatpak_dir_get_path (self));
   g_autoptr(GFile) appstream_file = NULL;
@@ -1213,7 +1173,6 @@ flatpak_dir_load_appstream_store (FlatpakDir    *self,
   return success;
 }
 
-
 void
 print_aligned (int len, const char *title, const char *value)
 {
@@ -1226,7 +1185,114 @@ print_aligned (int len, const char *title, const char *value)
       off = FLATPAK_ANSI_BOLD_OFF;
     }
 
-  g_print ("%s%*s%s%s %s\n", on, len - (int)g_utf8_strlen (title, -1), "", title, off, value);
+  g_print ("%s%*s%s%s %s\n", on, len - (int) cell_width (title), "", title, off, value);
+}
+
+void
+print_aligned_take (int len, const char *title, char *value)
+{
+  print_aligned (len, title, value);
+  g_free (value);
+}
+
+static const char *
+skip_escape_sequence (const char *p)
+{
+  if (g_str_has_prefix (p, FLATPAK_ANSI_ALT_SCREEN_ON))
+    p += strlen (FLATPAK_ANSI_ALT_SCREEN_ON);
+  else if (g_str_has_prefix (p, FLATPAK_ANSI_ALT_SCREEN_OFF))
+    p += strlen (FLATPAK_ANSI_ALT_SCREEN_OFF);
+  else if (g_str_has_prefix (p, FLATPAK_ANSI_HIDE_CURSOR))
+    p += strlen (FLATPAK_ANSI_HIDE_CURSOR);
+  else if (g_str_has_prefix (p, FLATPAK_ANSI_SHOW_CURSOR))
+    p += strlen (FLATPAK_ANSI_SHOW_CURSOR);
+  else if (g_str_has_prefix (p, FLATPAK_ANSI_BOLD_ON))
+    p += strlen (FLATPAK_ANSI_BOLD_ON);
+  else if (g_str_has_prefix (p, FLATPAK_ANSI_BOLD_OFF))
+    p += strlen (FLATPAK_ANSI_BOLD_OFF);
+  else if (g_str_has_prefix (p, FLATPAK_ANSI_FAINT_ON))
+    p += strlen (FLATPAK_ANSI_FAINT_ON);
+  else if (g_str_has_prefix (p, FLATPAK_ANSI_FAINT_OFF))
+    p += strlen (FLATPAK_ANSI_FAINT_OFF);
+  else if (g_str_has_prefix (p, FLATPAK_ANSI_RED))
+    p += strlen (FLATPAK_ANSI_RED);
+  else if (g_str_has_prefix (p, FLATPAK_ANSI_GREEN))
+    p += strlen (FLATPAK_ANSI_GREEN);
+  else if (g_str_has_prefix (p, FLATPAK_ANSI_COLOR_RESET))
+    p += strlen (FLATPAK_ANSI_COLOR_RESET);
+  else if (g_str_has_prefix (p, FLATPAK_ANSI_ROW_N))
+    p += strlen (FLATPAK_ANSI_ROW_N);
+  else if (g_str_has_prefix (p, FLATPAK_ANSI_CLEAR))
+    p += strlen (FLATPAK_ANSI_CLEAR);
+  else if (g_str_has_prefix (p, "\x1b"))
+    {
+      g_warning ("Unknown Escape sequence");
+      p++; /* avoid looping forever */
+    }
+  return p;
+}
+
+/* A variant of g_utf8_strlen that skips Escape sequences,
+ * and takes character width into account
+ */
+int
+cell_width (const char *text)
+{
+  const char *p = text;
+  gunichar c;
+  int width = 0;
+
+  while (*p)
+    {
+      while (*p && *p == '\x1b')
+        p = skip_escape_sequence (p);
+
+      if (!*p)
+        break;
+
+      c = g_utf8_get_char (p);
+
+      if (g_unichar_iswide (c))
+        width += 2;
+      else if (!g_unichar_iszerowidth (c))
+        width += 1;
+
+      p = g_utf8_next_char (p);
+    }
+
+  return width;
+}
+
+/* Advance text by num cells, skipping Escape sequences,
+ * and taking character width into account
+ */
+const char *
+cell_advance (const char *text,
+              int         num)
+{
+  const char *p = text;
+  gunichar c;
+  int width = 0;
+
+  while (width < num)
+    {
+      while (*p && *p == '\x1b')
+        p = skip_escape_sequence (p);
+
+      if (!*p)
+        break;
+
+      c = g_utf8_get_char (p);
+
+      if (g_unichar_iswide (c))
+        width += 2;
+      else if (!g_unichar_iszerowidth (c))
+        width += 1;
+
+      p = g_utf8_next_char (p);
+    }
+
+  return p;
 }
 
 static void
@@ -1238,24 +1304,24 @@ print_line_wrapped (int cols, const char *line)
 
   for (i = 0; words[i]; i++)
     {
-       int len = g_utf8_strlen (words[i], -1);
-       int space = col > 0;
+      int len = cell_width (words[i]);
+      int space = col > 0;
 
-       if (col + space + len >= cols)
-         {
-           g_print ("\n%s", words[i]);
-           col = len;
-         }
-       else
-         {
-           g_print ("%*s%s", space, "", words[i]);
-           col = col + space + len;
-         }
+      if (col + space + len >= cols)
+        {
+          g_print ("\n%s", words[i]);
+          col = len;
+        }
+      else
+        {
+          g_print ("%*s%s", space, "", words[i]);
+          col = col + space + len;
+        }
     }
 }
 
 void
-print_wrapped (int cols,
+print_wrapped (int         cols,
                const char *text,
                ...)
 {
@@ -1274,4 +1340,112 @@ print_wrapped (int cols,
       print_line_wrapped (cols, lines[i]);
       g_print ("\n");
     }
+}
+
+FlatpakRemoteState *
+get_remote_state (FlatpakDir   *dir,
+                  const char   *remote,
+                  gboolean      cached,
+                  gboolean      only_sideloaded,
+                  const char   *opt_arch,
+                  const char  **opt_sideload_repos,
+                  GCancellable *cancellable,
+                  GError      **error)
+{
+  g_autoptr(GError) local_error = NULL;
+  FlatpakRemoteState *state = NULL;
+
+  if (only_sideloaded)
+    {
+      state = flatpak_dir_get_remote_state_local_only (dir, remote, cancellable, error);
+      if (state == NULL)
+        return NULL;
+    }
+  else
+    {
+      state = flatpak_dir_get_remote_state_optional (dir, remote, cached, cancellable, &local_error);
+      if (state == NULL && g_error_matches (local_error, FLATPAK_ERROR, FLATPAK_ERROR_NOT_CACHED))
+        {
+          g_clear_error (&local_error);
+          state = flatpak_dir_get_remote_state_optional (dir, remote, FALSE, cancellable, &local_error);
+        }
+
+      if (state == NULL)
+        {
+          g_propagate_error (error, g_steal_pointer (&local_error));
+          return NULL;
+        }
+    }
+
+  if (opt_arch != NULL &&
+      !ensure_remote_state_arch (dir, state, opt_arch, cached, only_sideloaded, cancellable, &local_error))
+    return NULL;
+
+  for (int i = 0; opt_sideload_repos != NULL && opt_sideload_repos[i] != NULL; i++)
+     {
+      g_autoptr(GFile) f = g_file_new_for_path (opt_sideload_repos[i]);
+      flatpak_remote_state_add_sideload_repo (state, f);
+     }
+
+  return state;
+}
+
+gboolean
+ensure_remote_state_arch (FlatpakDir         *dir,
+                          FlatpakRemoteState *state,
+                          const char         *arch,
+                          gboolean            cached,
+                          gboolean            only_sideloaded,
+                          GCancellable       *cancellable,
+                          GError            **error)
+{
+  g_autoptr(GError) local_error = NULL;
+
+  if (only_sideloaded)
+    return TRUE;
+
+  if (flatpak_remote_state_ensure_subsummary (state, dir, arch, cached, cancellable, &local_error))
+    return TRUE;
+
+  if (!g_error_matches (local_error, FLATPAK_ERROR, FLATPAK_ERROR_NOT_CACHED))
+    {
+      g_propagate_error (error, g_steal_pointer (&local_error));
+      return FALSE;
+    }
+
+  return flatpak_remote_state_ensure_subsummary (state, dir, arch, FALSE, cancellable, error);
+}
+
+gboolean
+ensure_remote_state_arch_for_ref (FlatpakDir         *dir,
+                                  FlatpakRemoteState *state,
+                                  const char         *ref,
+                                  gboolean            cached,
+                                  gboolean            only_sideloaded,
+                                  GCancellable       *cancellable,
+                                  GError            **error)
+{
+  g_autofree char *ref_arch = flatpak_get_arch_for_ref (ref);
+  return ensure_remote_state_arch (dir, state, ref_arch, cached, only_sideloaded,cancellable, error);
+}
+
+gboolean
+ensure_remote_state_all_arches (FlatpakDir         *dir,
+                                FlatpakRemoteState *state,
+                                gboolean            cached,
+                                gboolean            only_sideloaded,
+                                GCancellable       *cancellable,
+                                GError            **error)
+{
+  if (state->index_ht == NULL)
+    return TRUE;
+
+  GLNX_HASH_TABLE_FOREACH (state->index_ht, const char *, arch)
+    {
+      if (!ensure_remote_state_arch (dir, state, arch,
+                                     cached, only_sideloaded,
+                                     cancellable, error))
+        return FALSE;
+    }
+  return TRUE;
 }

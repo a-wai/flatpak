@@ -1,5 +1,5 @@
 /*
- * Copyright © 2014 Red Hat, Inc
+ * Copyright © 2014-2019 Red Hat, Inc
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -20,6 +20,7 @@
 
 #include "config.h"
 
+#include <errno.h>
 #include <locale.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,7 +29,12 @@
 #include <gio/gio.h>
 #include <gio/gunixfdlist.h>
 #include "flatpak-dbus-generated.h"
-#include "flatpak-utils-private.h"
+#include "flatpak-utils-base-private.h"
+
+typedef enum {
+  FLATPAK_HOST_COMMAND_FLAGS_CLEAR_ENV = 1 << 0,
+  FLATPAK_HOST_COMMAND_FLAGS_WATCH_BUS = 1 << 1,
+} FlatpakHostCommandFlags;
 
 static char *monitor_dir;
 static char *p11_kit_server_socket_path;
@@ -53,9 +59,9 @@ handle_sigterm (int signum)
 
 typedef struct
 {
-  GPid  pid;
-  char *client;
-  guint child_watch;
+  GPid     pid;
+  char    *client;
+  guint    child_watch;
   gboolean watch_bus;
 } PidData;
 
@@ -84,7 +90,7 @@ handle_request_session (FlatpakSessionHelper  *object,
   flatpak_session_helper_complete_request_session (object, invocation,
                                                    g_variant_builder_end (&builder));
 
-  return TRUE;
+  return G_DBUS_METHOD_INVOCATION_HANDLED;
 }
 
 
@@ -94,7 +100,6 @@ child_watch_died (GPid     pid,
                   gpointer user_data)
 {
   PidData *pid_data = user_data;
-
   g_autoptr(GVariant) signal_variant = NULL;
 
   g_debug ("Client Pid %d died", pid_data->pid);
@@ -159,7 +164,7 @@ child_setup_func (gpointer user_data)
         }
     }
 
-  /* Second pass in case we needed an inbetween fd value to avoid conflicts */
+  /* Second pass in case we needed an in-between fd value to avoid conflicts */
   for (i = 0; i < data->fd_map_len; i++)
     {
       if (fd_map[i].to != fd_map[i].final)
@@ -196,6 +201,7 @@ child_setup_func (gpointer user_data)
 static gboolean
 handle_host_command (FlatpakDevelopment    *object,
                      GDBusMethodInvocation *invocation,
+                     GUnixFDList           *fd_list,
                      const gchar           *arg_cwd_path,
                      const gchar *const    *arg_argv,
                      GVariant              *arg_fds,
@@ -203,8 +209,6 @@ handle_host_command (FlatpakDevelopment    *object,
                      guint                  flags)
 {
   g_autoptr(GError) error = NULL;
-  GDBusMessage *message = g_dbus_method_invocation_get_message (invocation);
-  GUnixFDList *fd_list = g_dbus_message_get_unix_fd_list (message);
   ChildSetupData child_setup_data = { NULL };
   GPid pid;
   PidData *pid_data;
@@ -222,18 +226,18 @@ handle_host_command (FlatpakDevelopment    *object,
       g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
                                              G_DBUS_ERROR_INVALID_ARGS,
                                              "No command given");
-      return TRUE;
+      return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
   if (!g_variant_is_of_type (arg_fds, G_VARIANT_TYPE ("a{uh}")) ||
       !g_variant_is_of_type (arg_envs, G_VARIANT_TYPE ("a{ss}")) ||
-      (flags & ~(FLATPAK_HOST_COMMAND_FLAGS_CLEAR_ENV|
+      (flags & ~(FLATPAK_HOST_COMMAND_FLAGS_CLEAR_ENV |
                  FLATPAK_HOST_COMMAND_FLAGS_WATCH_BUS)) != 0)
     {
       g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
                                              G_DBUS_ERROR_INVALID_ARGS,
                                              "Unexpected argument");
-      return TRUE;
+      return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
   g_debug ("Running host command %s", arg_argv[0]);
@@ -338,7 +342,7 @@ handle_host_command (FlatpakDevelopment    *object,
       g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR, code,
                                              "Failed to start command: %s",
                                              error->message);
-      return TRUE;
+      return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
   pid_data = g_new0 (PidData, 1);
@@ -357,9 +361,9 @@ handle_host_command (FlatpakDevelopment    *object,
                         pid_data);
 
 
-  flatpak_development_complete_host_command (object, invocation,
+  flatpak_development_complete_host_command (object, invocation, NULL,
                                              pid_data->pid);
-  return TRUE;
+  return G_DBUS_METHOD_INVOCATION_HANDLED;
 }
 
 static gboolean
@@ -378,7 +382,7 @@ handle_host_command_signal (FlatpakDevelopment    *object,
       g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
                                              G_DBUS_ERROR_UNIX_PROCESS_ID_UNKNOWN,
                                              "No such pid");
-      return TRUE;
+      return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
   g_debug ("Sending signal %d to client pid %d", arg_signal, arg_pid);
@@ -390,7 +394,7 @@ handle_host_command_signal (FlatpakDevelopment    *object,
 
   flatpak_development_complete_host_command_signal (object, invocation);
 
-  return TRUE;
+  return G_DBUS_METHOD_INVOCATION_HANDLED;
 }
 
 static void
@@ -623,8 +627,8 @@ file_monitor_do (MonitorData *data)
        * correct form "../usr/share/zoneinfo/$timezone". So, instead we use the old debian
        * /etc/timezone file for telling the sandbox the timezone. */
       char *dest = g_build_filename (monitor_dir, "timezone", NULL);
-      g_autofree char *timezone = flatpak_get_timezone ();
-      g_autofree char *timezone_content = g_strdup_printf ("%s\n", timezone);
+      g_autofree char *raw_timezone = flatpak_get_timezone ();
+      g_autofree char *timezone_content = g_strdup_printf ("%s\n", raw_timezone);
 
       g_file_set_contents (dest, timezone_content, -1, NULL);
     }
@@ -690,7 +694,6 @@ start_p11_kit_server (const char *flatpak_dir)
   g_autofree char *socket_path = g_build_filename (flatpak_dir, socket_basename, NULL);
   g_autofree char *p11_kit_stdout = NULL;
   gint exit_status;
-
   g_autoptr(GError) local_error = NULL;
   g_auto(GStrv) stdout_lines = NULL;
   int i;
@@ -767,7 +770,6 @@ main (int    argc,
   GOptionContext *context;
   GBusNameOwnerFlags flags;
   g_autofree char *flatpak_dir = NULL;
-
   g_autoptr(GError) error = NULL;
   const GOptionEntry options[] = {
     { "replace", 'r', 0, G_OPTION_ARG_NONE, &replace,  "Replace old daemon.", NULL },

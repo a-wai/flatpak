@@ -39,6 +39,7 @@ static char **opt_gpg_key_ids;
 static char *opt_gpg_homedir;
 static gboolean opt_update_appstream;
 static gboolean opt_no_update_summary;
+static gboolean opt_no_summary_index = FALSE;
 
 static GOptionEntry options[] = {
   { "ref", 0, 0, G_OPTION_ARG_STRING, &opt_ref, N_("Override the ref used for the imported bundle"), N_("REF") },
@@ -47,6 +48,7 @@ static GOptionEntry options[] = {
   { "gpg-homedir", 0, 0, G_OPTION_ARG_STRING, &opt_gpg_homedir, N_("GPG Homedir to use when looking for keyrings"), N_("HOMEDIR") },
   { "update-appstream", 0, 0, G_OPTION_ARG_NONE, &opt_update_appstream, N_("Update the appstream branch"), NULL },
   { "no-update-summary", 0, 0, G_OPTION_ARG_NONE, &opt_no_update_summary, N_("Don't update the summary"), NULL },
+  { "no-summary-index", 0, 0, G_OPTION_ARG_NONE, &opt_no_summary_index, N_("Don't generate a summary index"), NULL },
   { NULL }
 };
 
@@ -58,13 +60,13 @@ import_oci (OstreeRepo *repo, GFile *file,
   g_autofree char *dir_uri = NULL;
   g_autofree char *target_ref = NULL;
   const char *oci_digest;
-
   g_autoptr(FlatpakOciRegistry) registry = NULL;
   g_autoptr(FlatpakOciVersioned) versioned = NULL;
+  g_autoptr(FlatpakOciImage) image_config = NULL;
   FlatpakOciManifest *manifest = NULL;
   g_autoptr(FlatpakOciIndex) index = NULL;
   const FlatpakOciManifestDescriptor *desc;
-  GHashTable *annotations;
+  GHashTable *labels;
 
   dir_uri = g_file_get_uri (file);
   registry = flatpak_oci_registry_new (dir_uri, FALSE, -1, cancellable, error);
@@ -97,18 +99,23 @@ import_oci (OstreeRepo *repo, GFile *file,
   oci_digest = desc->parent.digest;
 
   versioned = flatpak_oci_registry_load_versioned (registry, NULL,
-                                                   oci_digest, NULL,
+                                                   oci_digest, NULL, NULL,
                                                    cancellable, error);
   if (versioned == NULL)
     return NULL;
 
   manifest = FLATPAK_OCI_MANIFEST (versioned);
 
-  annotations = flatpak_oci_manifest_get_annotations (manifest);
-  if (annotations)
-    flatpak_oci_parse_commit_annotations (annotations, NULL, NULL, NULL,
-                                          &target_ref, NULL, NULL, NULL);
+  image_config = flatpak_oci_registry_load_image_config (registry, NULL,
+                                                         manifest->config.digest, NULL,
+                                                         NULL, cancellable, error);
+  if (image_config == NULL)
+    return FALSE;
 
+  labels = flatpak_oci_image_get_labels (image_config);
+  if (labels)
+    flatpak_oci_parse_commit_labels (labels, NULL, NULL, NULL,
+                                     &target_ref, NULL, NULL, NULL);
   if (target_ref == NULL)
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
@@ -116,8 +123,8 @@ import_oci (OstreeRepo *repo, GFile *file,
       return NULL;
     }
 
-  commit_checksum = flatpak_pull_from_oci (repo, registry, NULL, oci_digest, manifest,
-                                           NULL, target_ref, NULL, NULL, cancellable, error);
+  commit_checksum = flatpak_pull_from_oci (repo, registry, NULL, oci_digest, NULL, manifest, image_config,
+                                           NULL, target_ref, FLATPAK_PULL_FLAGS_NONE, NULL, NULL, cancellable, error);
   if (commit_checksum == NULL)
     return NULL;
 
@@ -131,7 +138,7 @@ import_bundle (OstreeRepo *repo, GFile *file,
                GCancellable *cancellable, GError **error)
 {
   g_autoptr(GVariant) metadata = NULL;
-  g_autofree char *bundle_ref = NULL;
+  g_autoptr(FlatpakDecomposed) bundle_ref = NULL;
   g_autofree char *to_checksum = NULL;
   const char *ref;
 
@@ -147,7 +154,7 @@ import_bundle (OstreeRepo *repo, GFile *file,
   if (opt_ref != NULL)
     ref = opt_ref;
   else
-    ref = bundle_ref;
+    ref = flatpak_decomposed_get_ref (bundle_ref);
 
   g_print (_("Importing %s (%s)\n"), ref, to_checksum);
   if (!flatpak_pull_from_bundle (repo, file,
@@ -234,13 +241,21 @@ flatpak_builtin_build_import (int argc, char **argv, GCancellable *cancellable, 
       !flatpak_repo_generate_appstream (repo, (const char **) opt_gpg_key_ids, opt_gpg_homedir, 0, cancellable, error))
     return FALSE;
 
-  if (!opt_no_update_summary &&
-      !flatpak_repo_update (repo,
-                            (const char **) opt_gpg_key_ids,
-                            opt_gpg_homedir,
-                            cancellable,
-                            error))
-    return FALSE;
+  if (!opt_no_update_summary)
+    {
+      FlatpakRepoUpdateFlags flags = FLATPAK_REPO_UPDATE_FLAG_NONE;
+
+      if (opt_no_summary_index)
+        flags |= FLATPAK_REPO_UPDATE_FLAG_DISABLE_INDEX;
+
+      g_debug ("Updating summary");
+      if (!flatpak_repo_update (repo, flags,
+                                (const char **) opt_gpg_key_ids,
+                                opt_gpg_homedir,
+                                cancellable,
+                                error))
+        return FALSE;
+    }
 
   return TRUE;
 }
