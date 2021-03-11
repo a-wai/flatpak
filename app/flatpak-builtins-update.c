@@ -39,6 +39,7 @@
 static char *opt_arch;
 static char *opt_commit;
 static char **opt_subpaths;
+static char **opt_sideload_repos;
 static gboolean opt_force_remove;
 static gboolean opt_no_pull;
 static gboolean opt_no_deploy;
@@ -66,6 +67,8 @@ static GOptionEntry options[] = {
   { "subpath", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_subpaths, N_("Only update this subpath"), N_("PATH") },
   { "assumeyes", 'y', 0, G_OPTION_ARG_NONE, &opt_yes, N_("Automatically answer yes for all questions"), NULL },
   { "noninteractive", 0, 0, G_OPTION_ARG_NONE, &opt_noninteractive, N_("Produce minimal output and don't ask questions"), NULL },
+  /* Translators: A sideload is when you install from a local USB drive rather than the Internet. */
+  { "sideload-repo", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_sideload_repos, N_("Use this local repo for sideloads"), N_("PATH") },
   { NULL }
 };
 
@@ -100,6 +103,9 @@ flatpak_builtin_update (int           argc,
       return TRUE;
     }
 
+  if (opt_noninteractive)
+    opt_yes = TRUE; /* Implied */
+
   prefs = &argv[1];
   n_prefs = argc - 1;
 
@@ -109,6 +115,10 @@ flatpak_builtin_update (int           argc,
       default_branch = argv[2];
       n_prefs = 1;
     }
+
+  /* It doesn't make sense to use the same commit for more than one thing */
+  if (opt_commit && n_prefs != 1)
+    return usage_error (context, _("With --commit, only one REF may be specified"), error);
 
   transactions = g_ptr_array_new_with_free_func ((GDestroyNotify) g_object_unref);
 
@@ -128,7 +138,7 @@ flatpak_builtin_update (int           argc,
       if (opt_noninteractive)
         transaction = flatpak_quiet_transaction_new (dir, error);
       else
-        transaction = flatpak_cli_transaction_new (dir, opt_yes, FALSE, error);
+        transaction = flatpak_cli_transaction_new (dir, opt_yes, FALSE, opt_arch != NULL, error);
       if (transaction == NULL)
         return FALSE;
 
@@ -137,6 +147,11 @@ flatpak_builtin_update (int           argc,
       flatpak_transaction_set_disable_static_deltas (transaction, opt_no_static_deltas);
       flatpak_transaction_set_disable_dependencies (transaction, opt_no_deps);
       flatpak_transaction_set_disable_related (transaction, opt_no_related);
+      if (opt_arch)
+        flatpak_transaction_set_default_arch (transaction, opt_arch);
+
+      for (i = 0; opt_sideload_repos != NULL && opt_sideload_repos[i] != NULL; i++)
+        flatpak_transaction_add_sideload_repo (transaction, opt_sideload_repos[i]);
 
       g_ptr_array_insert (transactions, 0, transaction);
     }
@@ -150,9 +165,9 @@ flatpak_builtin_update (int           argc,
     {
       const char *pref = NULL;
       FlatpakKinds matched_kinds;
-      g_autofree char *id = NULL;
-      g_autofree char *arch = NULL;
-      g_autofree char *branch = NULL;
+      g_autofree char *match_id = NULL;
+      g_autofree char *match_arch = NULL;
+      g_autofree char *match_branch = NULL;
       gboolean found = FALSE;
 
       if (n_prefs == 0)
@@ -163,7 +178,7 @@ flatpak_builtin_update (int           argc,
         {
           pref = prefs[j];
           if (!flatpak_split_partial_ref_arg (pref, kinds, opt_arch, default_branch,
-                                              &matched_kinds, &id, &arch, &branch, error))
+                                              &matched_kinds, &match_id, &match_arch, &match_branch, error))
             return FALSE;
         }
 
@@ -171,85 +186,38 @@ flatpak_builtin_update (int           argc,
         {
           FlatpakDir *dir = g_ptr_array_index (dirs, k);
           FlatpakTransaction *transaction = g_ptr_array_index (transactions, k);
+          g_autoptr(GPtrArray) refs = NULL;
 
-          if (kinds & FLATPAK_KINDS_APP)
+          refs = flatpak_dir_list_refs (dir, kinds, cancellable, error);
+          if (refs == NULL)
+            return FALSE;
+
+          for (i = 0; i < refs->len; i++)
             {
-              g_auto(GStrv) refs = NULL;
+              FlatpakDecomposed *ref = g_ptr_array_index (refs, i);
 
-              if (!flatpak_dir_list_refs (dir, "app", &refs,
-                                          cancellable,
-                                          error))
-                return FALSE;
+              if (match_id != NULL && !flatpak_decomposed_is_id (ref, match_id))
+                continue;
 
-              for (i = 0; refs != NULL && refs[i] != NULL; i++)
+              if (match_arch != NULL && !flatpak_decomposed_is_arch (ref, match_arch))
+                continue;
+
+              if (match_branch != NULL && !flatpak_decomposed_is_branch (ref, match_branch))
+                continue;
+
+              found = TRUE;
+              if (flatpak_transaction_add_update (transaction, flatpak_decomposed_get_ref (ref),
+                                                  (const char **) opt_subpaths, opt_commit, error))
+                continue;
+
+              if (g_error_matches (*error, FLATPAK_ERROR, FLATPAK_ERROR_REMOTE_NOT_FOUND))
                 {
-                  g_auto(GStrv) parts = flatpak_decompose_ref (refs[i], error);
-                  if (parts == NULL)
-                    return FALSE;
-
-                  if (id != NULL && strcmp (parts[1], id) != 0)
-                    continue;
-
-                  if (arch != NULL && strcmp (parts[2], arch) != 0)
-                    continue;
-
-                  if (branch != NULL && strcmp (parts[3], branch) != 0)
-                    continue;
-
-                  found = TRUE;
-                  if (flatpak_transaction_add_update (transaction, refs[i], (const char **) opt_subpaths, opt_commit, error))
-                    continue;
-
-                  if (g_error_matches (*error, FLATPAK_ERROR, FLATPAK_ERROR_REMOTE_NOT_FOUND))
-                    {
-                      g_printerr (_("Unable to update %s: %s\n"), refs[i], (*error)->message);
-                      g_clear_error (error);
-                    }
-                  else
-                    {
-                      return FALSE;
-                    }
+                  g_printerr (_("Unable to update %s: %s\n"), flatpak_decomposed_get_ref (ref), (*error)->message);
+                  g_clear_error (error);
                 }
-            }
-
-          if (kinds & FLATPAK_KINDS_RUNTIME)
-            {
-              g_auto(GStrv) refs = NULL;
-
-              if (!flatpak_dir_list_refs (dir, "runtime", &refs,
-                                          cancellable,
-                                          error))
-                return FALSE;
-
-              for (i = 0; refs != NULL && refs[i] != NULL; i++)
+              else
                 {
-                  g_auto(GStrv) parts = flatpak_decompose_ref (refs[i], error);
-
-                  if (parts == NULL)
-                    return FALSE;
-
-                  if (id != NULL && strcmp (parts[1], id) != 0)
-                    continue;
-
-                  if (arch != NULL && strcmp (parts[2], arch) != 0)
-                    continue;
-
-                  if (branch != NULL && strcmp (parts[3], branch) != 0)
-                    continue;
-
-                  found = TRUE;
-                  if (flatpak_transaction_add_update (transaction, refs[i], (const char **) opt_subpaths, opt_commit, error))
-                    continue;
-
-                  if (g_error_matches (*error, FLATPAK_ERROR, FLATPAK_ERROR_REMOTE_NOT_FOUND))
-                    {
-                      g_printerr (_("Unable to update %s: %s\n"), refs[i], (*error)->message);
-                      g_clear_error (error);
-                    }
-                  else
-                    {
-                      return FALSE;
-                    }
+                  return FALSE;
                 }
             }
         }
@@ -259,6 +227,23 @@ flatpak_builtin_update (int           argc,
           g_set_error (error, FLATPAK_ERROR, FLATPAK_ERROR_NOT_INSTALLED,
                        "%s not installed", pref);
           return FALSE;
+        }
+    }
+
+  /* Add uninstall operations for any runtimes that are unused and EOL.
+   * Strictly speaking these are not updates but "update" is the command people
+   * run to keep their system maintained. It would be possible to do this in
+   * the transaction that updates them to being EOL, but doing it here seems
+   * more future-proof since we may want to use additional conditions to
+   * determine if something is unused. See
+   * https://github.com/flatpak/flatpak/issues/3799
+   */
+  if ((kinds & FLATPAK_KINDS_RUNTIME) && n_prefs == 0 && !opt_no_deps)
+    {
+      for (k = 0; k < dirs->len; k++)
+        {
+          FlatpakTransaction *transaction = g_ptr_array_index (transactions, k);
+          flatpak_transaction_set_include_unused_uninstall_ops (transaction, TRUE);
         }
     }
 
@@ -274,10 +259,7 @@ flatpak_builtin_update (int           argc,
       if (!flatpak_transaction_run (transaction, cancellable, error))
         {
           if (g_error_matches (*error, FLATPAK_ERROR, FLATPAK_ERROR_ABORTED))
-            {
-              g_clear_error (error);
-              return TRUE;
-            }
+            g_clear_error (error);  /* Don't report on stderr */
 
           return FALSE;
         }

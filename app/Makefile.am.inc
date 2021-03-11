@@ -7,7 +7,7 @@ EXTRA_DIST += app/parse-datetime.y
 flatpak_dbus_built_sources = app/flatpak-permission-dbus-generated.c app/flatpak-permission-dbus-generated.h
 
 app/flatpak-permission-dbus-generated.c: data/org.freedesktop.impl.portal.PermissionStore.xml Makefile
-	mkdir -p $(builddir)/common
+	mkdir -p $(builddir)/app
 	$(AM_V_GEN) $(GDBUS_CODEGEN)                            \
 		--interface-prefix org.freedesktop.impl.portal  \
 		--c-namespace XdpDbus                           \
@@ -49,8 +49,6 @@ libflatpak_app_la_LIBADD = \
 	$(APPSTREAM_GLIB_LIBS) \
 	$(SYSTEMD_LIBS) \
 	$(POLKIT_LIBS) \
-	libglnx.la \
-	libflatpak-common.la \
 	$(NULL)
 
 libflatpak_app_la_CFLAGS = \
@@ -82,6 +80,8 @@ flatpak_SOURCES = \
 	app/flatpak-builtins-make-current.c \
 	app/flatpak-builtins-update.c \
 	app/flatpak-builtins-uninstall.c \
+	app/flatpak-builtins-mask.c \
+	app/flatpak-builtins-pin.c \
 	app/flatpak-builtins-list.c \
 	app/flatpak-builtins-info.c \
 	app/flatpak-builtins-config.c \
@@ -103,6 +103,7 @@ flatpak_SOURCES = \
 	app/flatpak-builtins-document-info.c \
 	app/flatpak-builtins-document-list.c \
 	app/flatpak-builtins-permission-remove.c \
+	app/flatpak-builtins-permission-set.c \
 	app/flatpak-builtins-permission-list.c \
 	app/flatpak-builtins-permission-show.c \
 	app/flatpak-builtins-permission-reset.c \
@@ -143,6 +144,7 @@ flatpak_LDADD = \
 	libglnx.la \
 	libflatpak-app.la \
 	libflatpak-common.la \
+	libflatpak-common-base.la \
 	$(NULL)
 
 flatpak_CFLAGS = \

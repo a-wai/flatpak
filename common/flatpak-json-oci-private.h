@@ -27,18 +27,20 @@ G_BEGIN_DECLS
 
 #define FLATPAK_OCI_MEDIA_TYPE_DESCRIPTOR "application/vnd.oci.descriptor.v1+json"
 #define FLATPAK_OCI_MEDIA_TYPE_IMAGE_MANIFEST "application/vnd.oci.image.manifest.v1+json"
+#define FLATPAK_DOCKER_MEDIA_TYPE_IMAGE_MANIFEST2 "application/vnd.docker.distribution.manifest.v2+json"
 #define FLATPAK_OCI_MEDIA_TYPE_IMAGE_INDEX "application/vnd.oci.image.index.v1+json"
 #define FLATPAK_OCI_MEDIA_TYPE_IMAGE_LAYER "application/vnd.oci.image.layer.v1.tar+gzip"
 #define FLATPAK_OCI_MEDIA_TYPE_IMAGE_LAYER_NONDISTRIBUTABLE "application/vnd.oci.image.layer.nondistributable.v1.tar+gzip"
 #define FLATPAK_OCI_MEDIA_TYPE_IMAGE_CONFIG "application/vnd.oci.image.config.v1+json"
+#define FLATPAK_DOCKER_MEDIA_TYPE_IMAGE_IMAGE_CONFIG "application/vnd.docker.container.image.v1+json"
 
 #define FLATPAK_OCI_SIGNATURE_TYPE_FLATPAK "flatpak oci image signature"
 
 const char * flatpak_arch_to_oci_arch (const char *flatpak_arch);
-void flatpak_oci_export_annotations (GHashTable *source,
-                                     GHashTable *dest);
-void flatpak_oci_copy_annotations (GHashTable *source,
-                                   GHashTable *dest);
+void flatpak_oci_export_labels (GHashTable *source,
+                                GHashTable *dest);
+void flatpak_oci_copy_labels (GHashTable *source,
+                              GHashTable *dest);
 
 typedef struct
 {
@@ -97,8 +99,9 @@ struct _FlatpakOciVersionedClass
   FlatpakJsonClass parent_class;
 };
 
-FlatpakOciVersioned *flatpak_oci_versioned_from_json (GBytes  *bytes,
-                                                      GError **error);
+FlatpakOciVersioned *flatpak_oci_versioned_from_json (GBytes     *bytes,
+                                                      const char *content_type,
+                                                      GError    **error);
 const char *         flatpak_oci_versioned_get_mediatype (FlatpakOciVersioned *self);
 gint64               flatpak_oci_versioned_get_version (FlatpakOciVersioned *self);
 
@@ -132,6 +135,12 @@ const char *        flatpak_oci_manifest_get_layer_digest (FlatpakOciManifest *s
                                                            int                 i);
 GHashTable *        flatpak_oci_manifest_get_annotations (FlatpakOciManifest *self);
 
+/* Only useful for delta manifest */
+FlatpakOciDescriptor *flatpak_oci_manifest_find_delta_for (FlatpakOciManifest *deltamanifest,
+                                                           const char         *from_diffid,
+                                                           const char         *to_diffid);
+
+
 #define FLATPAK_TYPE_OCI_INDEX flatpak_oci_index_get_type ()
 G_DECLARE_FINAL_TYPE (FlatpakOciIndex, flatpak_oci_index, FLATPAK, OCI_INDEX, FlatpakOciVersioned)
 
@@ -150,6 +159,7 @@ struct _FlatpakOciIndexClass
 
 FlatpakOciIndex *             flatpak_oci_index_new (void);
 void                          flatpak_oci_index_add_manifest (FlatpakOciIndex      *self,
+                                                              const char           *ref,
                                                               FlatpakOciDescriptor *desc);
 gboolean                      flatpak_oci_index_remove_manifest (FlatpakOciIndex *self,
                                                                  const char      *ref);
@@ -157,6 +167,11 @@ FlatpakOciManifestDescriptor *flatpak_oci_index_get_manifest (FlatpakOciIndex *s
                                                               const char      *ref);
 FlatpakOciManifestDescriptor *flatpak_oci_index_get_only_manifest (FlatpakOciIndex *self);
 int                           flatpak_oci_index_get_n_manifests (FlatpakOciIndex *self);
+
+/* Only useful for delta index */
+FlatpakOciDescriptor *flatpak_oci_index_find_delta_for (FlatpakOciIndex *delta_index,
+                                                        const char      *for_digest);
+
 
 #define FLATPAK_TYPE_OCI_IMAGE flatpak_oci_image_get_type ()
 G_DECLARE_FINAL_TYPE (FlatpakOciImage, flatpak_oci_image, FLATPAK, OCI_IMAGE, FlatpakJson)
@@ -218,21 +233,27 @@ void             flatpak_oci_image_set_os (FlatpakOciImage *image,
                                            const char      *os);
 void             flatpak_oci_image_set_layers (FlatpakOciImage *image,
                                                const char     **layers);
+int              flatpak_oci_image_get_n_layers (FlatpakOciImage *image);
 void             flatpak_oci_image_set_layer (FlatpakOciImage *image,
                                               const char      *layer);
+GHashTable *     flatpak_oci_image_get_labels (FlatpakOciImage *self);
+int              flatpak_oci_image_add_history (FlatpakOciImage *image);
 
-void flatpak_oci_add_annotations_for_commit (GHashTable *annotations,
-                                             const char *ref,
-                                             const char *commit,
-                                             GVariant   *commit_data);
-void flatpak_oci_parse_commit_annotations (GHashTable      *annotations,
-                                           guint64         *out_timestamp,
-                                           char           **out_subject,
-                                           char           **out_body,
-                                           char           **out_ref,
-                                           char           **out_commit,
-                                           char           **out_parent_commit,
-                                           GVariantBuilder *metadata_builder);
+FlatpakOciImage * flatpak_oci_image_from_json (GBytes *bytes,
+                                               GError **error);
+
+void flatpak_oci_add_labels_for_commit (GHashTable *labels,
+                                        const char *ref,
+                                        const char *commit,
+                                        GVariant   *commit_data);
+void flatpak_oci_parse_commit_labels (GHashTable      *labels,
+                                      guint64         *out_timestamp,
+                                      char           **out_subject,
+                                      char           **out_body,
+                                      char           **out_ref,
+                                      char           **out_commit,
+                                      char           **out_parent_commit,
+                                      GVariantBuilder *metadata_builder);
 
 #define FLATPAK_TYPE_OCI_SIGNATURE flatpak_oci_signature_get_type ()
 G_DECLARE_FINAL_TYPE (FlatpakOciSignature, flatpak_oci_signature, FLATPAK, OCI_SIGNATURE, FlatpakJson)

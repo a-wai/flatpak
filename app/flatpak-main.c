@@ -35,7 +35,7 @@
 #include "flatpak-polkit-agent-text-listener.h"
 
 /* Work with polkit before and after autoptr support was added */
-typedef PolkitSubject             AutoPolkitSubject;
+typedef PolkitSubject AutoPolkitSubject;
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (AutoPolkitSubject, g_object_unref)
 #endif
 
@@ -50,6 +50,8 @@ static gboolean opt_default_arch;
 static gboolean opt_supported_arches;
 static gboolean opt_gl_drivers;
 static gboolean opt_list_installations;
+static gboolean opt_print_updated_env;
+static gboolean opt_print_system_only;
 static gboolean opt_user;
 static gboolean opt_system;
 static char **opt_installations;
@@ -74,9 +76,13 @@ static FlatpakCommand commands[] = {
   { N_(" Manage installed applications and runtimes") },
   { "install", N_("Install an application or runtime"), flatpak_builtin_install, flatpak_complete_install },
   { "update", N_("Update an installed application or runtime"), flatpak_builtin_update, flatpak_complete_update },
+  /* Alias upgrade to update to help users of yum/dnf */
+  { "upgrade", NULL, flatpak_builtin_update, flatpak_complete_update, TRUE },
   { "uninstall", N_("Uninstall an installed application or runtime"), flatpak_builtin_uninstall, flatpak_complete_uninstall },
   /* Alias remove to uninstall to help users of yum/dnf/apt */
   { "remove", NULL, flatpak_builtin_uninstall, flatpak_complete_uninstall, TRUE },
+  { "mask", N_("Mask out updates and automatic installation"), flatpak_builtin_mask, flatpak_complete_mask },
+  { "pin", N_("Pin a runtime to prevent automatic removal"), flatpak_builtin_pin, flatpak_complete_pin },
   { "list", N_("List installed apps and/or runtimes"), flatpak_builtin_list, flatpak_complete_list },
   { "info", N_("Show info for installed app or runtime"), flatpak_builtin_info, flatpak_complete_info },
   { "history", N_("Show history"), flatpak_builtin_history, flatpak_complete_history },
@@ -110,6 +116,7 @@ static FlatpakCommand commands[] = {
   { "permissions", N_("List permissions"), flatpak_builtin_permission_list, flatpak_complete_permission_list },
   { "permission-remove", N_("Remove item from permission store"), flatpak_builtin_permission_remove, flatpak_complete_permission_remove },
   { "permission-list", NULL, flatpak_builtin_permission_list, flatpak_complete_permission_list, TRUE },
+  { "permission-set", N_("Set permissions"), flatpak_builtin_permission_set, flatpak_complete_permission_set },
   { "permission-show", N_("Show app permissions"), flatpak_builtin_permission_show, flatpak_complete_permission_show },
   { "permission-reset", N_("Reset app permissions"), flatpak_builtin_permission_reset, flatpak_complete_permission_reset },
 
@@ -163,6 +170,8 @@ static GOptionEntry empty_entries[] = {
   { "supported-arches", 0, 0, G_OPTION_ARG_NONE, &opt_supported_arches, N_("Print supported arches and exit"), NULL },
   { "gl-drivers", 0, 0, G_OPTION_ARG_NONE, &opt_gl_drivers, N_("Print active gl drivers and exit"), NULL },
   { "installations", 0, 0, G_OPTION_ARG_NONE, &opt_list_installations, N_("Print paths for system installations and exit"), NULL },
+  { "print-updated-env", 0, 0, G_OPTION_ARG_NONE, &opt_print_updated_env, N_("Print the updated environment needed to run flatpaks"), NULL },
+  { "print-system-only", 0, 0, G_OPTION_ARG_NONE, &opt_print_system_only, N_("Only include the system installation with --print-updated-env"), NULL },
   { NULL }
 };
 
@@ -182,8 +191,16 @@ message_handler (const gchar   *log_domain,
   g_printerr ("F: %s\n", message);
 }
 
+static void
+no_message_handler (const char     *log_domain,
+                    GLogLevelFlags  log_level,
+                    const char     *message,
+                    gpointer        user_data)
+{
+}
+
 static GOptionContext *
-flatpak_option_context_new_with_commands (FlatpakCommand *commands)
+flatpak_option_context_new_with_commands (FlatpakCommand *f_commands)
 {
   GOptionContext *context;
   GString *summary;
@@ -193,25 +210,25 @@ flatpak_option_context_new_with_commands (FlatpakCommand *commands)
 
   summary = g_string_new (_("Builtin Commands:"));
 
-  while (commands->name != NULL)
+  while (f_commands->name != NULL)
     {
-      if (!commands->deprecated)
+      if (!f_commands->deprecated)
         {
-          if (commands->fn != NULL)
+          if (f_commands->fn != NULL)
             {
-              g_string_append_printf (summary, "\n  %s", commands->name);
+              g_string_append_printf (summary, "\n  %s", f_commands->name);
               /* Note: the 23 is there to align command descriptions with
                * the option descriptions produced by GOptionContext.
                */
-              if (commands->description)
-                g_string_append_printf (summary, "%*s%s", (int) (23 - strlen (commands->name)), "", _(commands->description));
+              if (f_commands->description)
+                g_string_append_printf (summary, "%*s%s", (int) (23 - strlen (f_commands->name)), "", _(f_commands->description));
             }
           else
             {
-              g_string_append_printf (summary, "\n%s", _(commands->name));
+              g_string_append_printf (summary, "\n%s", _(f_commands->name));
             }
         }
-      commands++;
+      f_commands++;
     }
 
   g_option_context_set_summary (context, summary->str);
@@ -232,6 +249,10 @@ check_environment (void)
   int i;
   int rows, cols;
 
+  /* Only print warnings on ttys */
+  if (!flatpak_fancy_output ())
+    return;
+
   /* Don't recommend restarting the session when we're not in one */
   if (!g_getenv ("DBUS_SESSION_BUS_ADDRESS"))
     return;
@@ -246,10 +267,20 @@ check_environment (void)
   dirs = g_get_system_data_dirs ();
   for (i = 0; dirs[i]; i++)
     {
-       if (g_str_has_prefix (dirs[i], system_exports))
-         has_system = TRUE;
-       if (g_str_has_prefix (dirs[i], user_exports))
-         has_user = TRUE;
+      /* There should never be a relative path but just in case we don't want
+       * g_file_new_for_path() to take the current directory into account.
+       */
+      if (!g_str_has_prefix (dirs[i], "/"))
+        continue;
+
+      /* Normalize the path using GFile to e.g. replace // with / */
+      g_autoptr(GFile) dir_file = g_file_new_for_path (dirs[i]);
+      g_autofree char *dir_path = g_file_get_path (dir_file);
+
+      if (g_str_has_prefix (dir_path, system_exports))
+        has_system = TRUE;
+      if (g_str_has_prefix (dir_path, user_exports))
+        has_user = TRUE;
     }
 
   flatpak_get_window_size (&rows, &cols);
@@ -267,7 +298,7 @@ check_environment (void)
                        "set by the XDG_DATA_DIRS environment variable, so applications "
                        "installed by Flatpak may not appear on your desktop until the "
                        "session is restarted."),
-                       missing);
+                     missing);
       g_print ("\n");
     }
   else if (!has_system || !has_user)
@@ -281,7 +312,7 @@ check_environment (void)
                        "set by the XDG_DATA_DIRS environment variable, so applications "
                        "installed by Flatpak may not appear on your desktop until the "
                        "session is restarted."),
-                       missing);
+                     missing);
       g_print ("\n");
     }
 }
@@ -302,7 +333,7 @@ flatpak_option_context_parse (GOptionContext     *context,
                                    FLATPAK_BUILTIN_FLAG_ONE_DIR |
                                    FLATPAK_BUILTIN_FLAG_STANDARD_DIRS |
                                    FLATPAK_BUILTIN_FLAG_ALL_DIRS)) != 1)
-     g_assert_not_reached ();
+    g_assert_not_reached ();
 
   if (!(flags & FLATPAK_BUILTIN_FLAG_NO_DIR))
     g_option_context_add_main_entries (context, user_entries, NULL);
@@ -320,7 +351,11 @@ flatpak_option_context_parse (GOptionContext     *context,
     return FALSE;
 
   /* We never want verbose output in the complete case, that breaks completion */
-  if (!is_in_complete)
+  if (is_in_complete)
+    {
+      g_log_set_default_handler (no_message_handler, NULL);
+    }
+  else
     {
       if (opt_verbose > 0)
         g_log_set_handler (G_LOG_DOMAIN, G_LOG_LEVEL_DEBUG, message_handler, NULL);
@@ -389,7 +424,7 @@ flatpak_option_context_parse (GOptionContext     *context,
                 {
                   FlatpakDir *dir = g_ptr_array_index (system_dirs, i);
                   const char *id = flatpak_dir_get_id (dir);
-                  if (g_strcmp0 (id, "default") != 0)
+                  if (g_strcmp0 (id, SYSTEM_DIR_DEFAULT_ID) != 0)
                     g_ptr_array_add (dirs, g_object_ref (dir));
                 }
             }
@@ -504,24 +539,45 @@ extract_command (int         *argc,
 }
 
 static const char *
-find_similar_command (const char *word)
+find_similar_command (const char *word,
+                      gboolean   *option)
 {
-  int i, d, best;
+  int i, d, k;
+  const char *suggestion;
+  GOptionEntry *entries[3] = { global_entries, empty_entries, user_entries };
 
   d = G_MAXINT;
-  best = 0;
+  suggestion = NULL;
 
   for (i = 0; commands[i].name; i++)
     {
-      int d1 = flatpak_levenshtein_distance (word, commands[i].name);
+      if (!commands[i].fn)
+        continue;
+
+      int d1 = flatpak_levenshtein_distance (word, -1, commands[i].name, -1);
       if (d1 < d)
         {
           d = d1;
-          best = i;
+          suggestion = commands[i].name;
+          *option = FALSE;
         }
     }
 
-  return commands[best].name;
+  for (k = 0; k < 3; k++)
+    {
+      for (i = 0; entries[k][i].long_name; i++)
+        {
+          int d1 = flatpak_levenshtein_distance (word, -1, entries[k][i].long_name, -1);
+          if (d1 < d)
+            {
+              d = d1;
+              suggestion = entries[k][i].long_name;
+              *option = TRUE;
+            }
+        }
+    }
+
+  return suggestion;
 }
 
 static gpointer
@@ -599,6 +655,7 @@ flatpak_run (int      argc,
   g_autofree char *prgname = NULL;
   gboolean success = FALSE;
   const char *command_name = NULL;
+
   __attribute__((cleanup (uninstall_polkit_agent))) gpointer polkit_agent = NULL;
 
   command = extract_command (&argc, argv, &command_name);
@@ -616,11 +673,12 @@ flatpak_run (int      argc,
       if (command_name != NULL)
         {
           const char *similar;
+          gboolean option;
 
-          similar = find_similar_command (command_name);
+          similar = find_similar_command (command_name, &option);
           if (similar)
-            msg = g_strdup_printf (_("'%s' is not a flatpak command. Did you mean '%s'?"),
-                                   command_name, similar);
+            msg = g_strdup_printf (_("'%s' is not a flatpak command. Did you mean '%s%s'?"),
+                                   command_name, option ? "--" : "", similar);
           else
             msg = g_strdup_printf (_("'%s' is not a flatpak command"),
                                    command_name);
@@ -679,6 +737,59 @@ flatpak_run (int      argc,
                       exit (EXIT_SUCCESS);
                     }
                 }
+
+              /* systemd environment generator for system and user installations.
+               * Intended to be used only from the scripts in env.d/.
+               * See `man systemd.environment-generator`. */
+              if (opt_print_updated_env)
+                {
+                  g_autoptr(GPtrArray) installations = g_ptr_array_new_with_free_func (g_free);  /* (element-type GFile) */
+                  GPtrArray *system_installation_locations;  /* (element-type GFile) */
+                  const gchar * const *xdg_data_dirs = g_get_system_data_dirs ();
+                  g_autoptr(GPtrArray) new_dirs = g_ptr_array_new_with_free_func (g_free);  /* (element-type filename) */
+                  g_autofree gchar *new_dirs_joined = NULL;
+
+                  /* Work out the set of installations we want in the environment. */
+                  if (!opt_print_system_only)
+                    {
+                      g_autoptr(GFile) home_installation_location = flatpak_get_user_base_dir_location ();
+                      g_ptr_array_add (installations, g_file_get_path (home_installation_location));
+                    }
+
+                  system_installation_locations = flatpak_get_system_base_dir_locations (NULL, &local_error);
+                  if (local_error != NULL)
+                    {
+                      g_printerr ("%s\n", local_error->message);
+                      exit (1);
+                    }
+
+                  for (gsize i = 0; i < system_installation_locations->len; i++)
+                    g_ptr_array_add (installations, g_file_get_path (system_installation_locations->pdata[i]));
+
+                  /* Get the export path for each installation, and filter out
+                   * ones which are already listed in @xdg_data_dirs. */
+                  for (gsize i = 0; i < installations->len; i++)
+                    {
+                      g_autofree gchar *share_path = g_build_filename (installations->pdata[i], "exports", "share", NULL);
+                      g_autofree gchar *share_path_with_slash = g_strconcat (share_path, "/", NULL);
+
+                      if (g_strv_contains (xdg_data_dirs, share_path) || g_strv_contains (xdg_data_dirs, share_path_with_slash))
+                        continue;
+
+                      g_ptr_array_add (new_dirs, g_steal_pointer (&share_path));
+                    }
+
+                  /* Add the rest of the existing @xdg_data_dirs to the new list. */
+                  for (gsize i = 0; xdg_data_dirs[i] != NULL; i++)
+                    g_ptr_array_add (new_dirs, g_strdup (xdg_data_dirs[i]));
+                  g_ptr_array_add (new_dirs, NULL);
+
+                  /* Print in a format suitable for a system environment generator. */
+                  new_dirs_joined = g_strjoinv (":", (gchar **) new_dirs->pdata);
+                  g_print ("XDG_DATA_DIRS=%s\n", new_dirs_joined);
+
+                  exit (EXIT_SUCCESS);
+                }
             }
 
           if (local_error)
@@ -697,23 +808,50 @@ flatpak_run (int      argc,
   prgname = g_strdup_printf ("%s %s", g_get_prgname (), command_name);
   g_set_prgname (prgname);
 
-  check_environment ();
+  /* Only print environment warnings in some commonly used interactive operations so we
+     avoid messing up output in commands where you might parse the output. */
+  if (g_strcmp0 (command->name, "install") == 0 ||
+      g_strcmp0 (command->name, "update") == 0 ||
+      g_strcmp0 (command->name, "remote-add") == 0 ||
+      g_strcmp0 (command->name, "run") == 0)
+    check_environment ();
 
-  polkit_agent = install_polkit_agent ();
+  /* Don't talk to dbus in enter, as it must be thread-free to setns, also
+     skip run/build for performance reasons (no need to connect to dbus). */
+  if (g_strcmp0 (command->name, "enter") != 0 &&
+      g_strcmp0 (command->name, "run") != 0 &&
+      g_strcmp0 (command->name, "build") != 0)
+    polkit_agent = install_polkit_agent ();
+
+  /* g_vfs_get_default can spawn threads */
+  if (g_strcmp0 (command->name, "enter") != 0)
+    {
+      g_autofree const char *old_env = NULL;
+
+      /* avoid gvfs (http://bugzilla.gnome.org/show_bug.cgi?id=526454) */
+      old_env = g_strdup (g_getenv ("GIO_USE_VFS"));
+      g_setenv ("GIO_USE_VFS", "local", TRUE);
+      g_vfs_get_default ();
+      if (old_env)
+        g_setenv ("GIO_USE_VFS", old_env, TRUE);
+      else
+        g_unsetenv ("GIO_USE_VFS");
+    }
 
   if (!command->fn (argc, argv, cancellable, &error))
     goto out;
 
   success = TRUE;
 out:
-  g_assert (success || error);
+  /* Note: We allow failures with NULL error (it means don't print anything), useful when e.g. the user aborted */
+  g_assert (!success || error == NULL);
 
   if (error)
     {
       g_propagate_error (res_error, error);
-      return 1;
     }
-  return 0;
+
+  return success ? 0 : 1;
 }
 
 static int
@@ -772,10 +910,17 @@ int
 main (int    argc,
       char **argv)
 {
-  GError *error = NULL;
-  g_autofree const char *old_env = NULL;
+  g_autoptr(GError) error = NULL;
   int ret;
   struct sigaction action;
+
+  /* The child repo shared between the client process and the
+     system-helper really needs to support creating files that
+     are readable by others, so override the umask to 022.
+     Ideally this should be set when needed, but umask is thread-unsafe
+     so there is really no local way to fix this.
+  */
+  umask(022);
 
   memset (&action, 0, sizeof (struct sigaction));
   action.sa_handler = handle_sigterm;
@@ -795,15 +940,6 @@ main (int    argc,
   /* Avoid weird recursive type initialization deadlocks from libsoup */
   g_type_ensure (G_TYPE_SOCKET);
 
-  /* avoid gvfs (http://bugzilla.gnome.org/show_bug.cgi?id=526454) */
-  old_env = g_strdup (g_getenv ("GIO_USE_VFS"));
-  g_setenv ("GIO_USE_VFS", "local", TRUE);
-  g_vfs_get_default ();
-  if (old_env)
-    g_setenv ("GIO_USE_VFS", old_env, TRUE);
-  else
-    g_unsetenv ("GIO_USE_VFS");
-
   if (argc >= 4 && strcmp (argv[1], "complete") == 0)
     return complete (argc, argv);
 
@@ -820,7 +956,6 @@ main (int    argc,
         }
       g_dbus_error_strip_remote_error (error);
       g_printerr ("%s%s %s%s\n", prefix, _("error:"), suffix, error->message);
-      g_error_free (error);
     }
 
   return ret;

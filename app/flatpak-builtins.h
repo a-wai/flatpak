@@ -43,10 +43,10 @@ G_BEGIN_DECLS
  * @FLATPAK_BUILTIN_FLAG_ALL_DIRS: Allow repeated use of --user/--system/--installation
  *    and return multiple dirs. If no option is specified, return all installations,
  *    starting with system(default)+user
- * 
+ *
  * Flags affecting the behavior of flatpak_option_context_parse().
  *
- * If the default system installation is among the returned diretories,
+ * If the default system installation is among the returned directories,
  * it will be returned first.
  */
 typedef enum {
@@ -74,7 +74,7 @@ gboolean usage_error (GOptionContext *context,
                       GError        **error);
 
 #define BUILTINPROTO(name) \
-  gboolean flatpak_builtin_ ## name (int argc, char **argv, GCancellable * cancellable, GError * *error); \
+  gboolean flatpak_builtin_ ## name (int argc, char **argv, GCancellable * cancellable, GError **error); \
   gboolean flatpak_complete_ ## name (FlatpakCompletion * completion);
 
 
@@ -85,6 +85,8 @@ BUILTINPROTO (remote_ls)
 BUILTINPROTO (remote_info)
 BUILTINPROTO (remote_list)
 BUILTINPROTO (install)
+BUILTINPROTO (mask)
+BUILTINPROTO (pin)
 BUILTINPROTO (update)
 BUILTINPROTO (make_current_app)
 BUILTINPROTO (uninstall)
@@ -108,6 +110,7 @@ BUILTINPROTO (document_unexport)
 BUILTINPROTO (document_info)
 BUILTINPROTO (document_list)
 BUILTINPROTO (permission_remove)
+BUILTINPROTO (permission_set)
 BUILTINPROTO (permission_list)
 BUILTINPROTO (permission_show)
 BUILTINPROTO (permission_reset)

@@ -59,7 +59,7 @@ static GOptionEntry options[] = {
   { "runtime", 0, 0, G_OPTION_ARG_STRING, &opt_runtime, N_("Change the runtime used for the app"),  N_("RUNTIME") },
   { "metadata", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_metadata, N_("Set generic metadata option"),  N_("GROUP=KEY[=VALUE]") },
   { "no-inherit-permissions", 0, 0, G_OPTION_ARG_NONE, &opt_no_inherit_permissions, N_("Don't inherit permissions from runtime"), NULL },
- { NULL }
+  { NULL }
 };
 
 static gboolean
@@ -75,7 +75,6 @@ export_dir (int           source_parent_fd,
             GError      **error)
 {
   int res;
-
   g_auto(GLnxDirFdIterator) source_iter = {0};
   glnx_autofd int destination_dfd = -1;
   struct dirent *dent;
@@ -293,7 +292,6 @@ static gboolean
 update_metadata (GFile *base, FlatpakContext *arg_context, gboolean is_runtime, GCancellable *cancellable, GError **error)
 {
   gboolean ret = FALSE;
-
   g_autoptr(GFile) metadata = NULL;
   g_autofree char *path = NULL;
   g_autoptr(GKeyFile) keyfile = NULL;
@@ -453,14 +451,14 @@ update_metadata (GFile *base, FlatpakContext *arg_context, gboolean is_runtime, 
       if (!opt_no_inherit_permissions)
         {
           g_autofree char *runtime_pref = NULL;
-          g_autofree char *runtime_ref = NULL;
           g_autoptr(GFile) runtime_deploy_dir = NULL;
 
           runtime_pref = g_key_file_get_string (keyfile, group, FLATPAK_METADATA_KEY_RUNTIME, NULL);
           if (runtime_pref != NULL)
             {
-              runtime_ref = g_strconcat ("runtime/", runtime_pref, NULL);
-              runtime_deploy_dir = flatpak_find_deploy_dir_for_ref (runtime_ref, NULL, cancellable, NULL);
+              g_autoptr(FlatpakDecomposed) runtime_ref = flatpak_decomposed_new_from_pref (FLATPAK_KINDS_RUNTIME, runtime_pref, NULL);
+              if (runtime_ref)
+                runtime_deploy_dir = flatpak_find_deploy_dir_for_ref (runtime_ref, NULL, cancellable, NULL);
             }
 
           /* This is optional, because some weird uses of flatpak build-finish (like the test suite)
@@ -587,6 +585,12 @@ update_metadata (GFile *base, FlatpakContext *arg_context, gboolean is_runtime, 
       if (g_strv_length (elements) < 2)
         {
           flatpak_fail (error, _("Too few elements in --extension argument %s, format should be NAME=VAR[=VALUE]"), opt_extensions[i]);
+          goto out;
+        }
+
+      if (!flatpak_is_valid_name (elements[0], -1, error))
+        {
+          glnx_prefix_error (error, _("Invalid extension name %s"), elements[0]);
           goto out;
         }
 

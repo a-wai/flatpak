@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
-    "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
+    "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 
 <refentry id="flatpak-create-usb">
 
@@ -45,14 +45,23 @@
             media mounted at <arg choice="plain">MOUNT-PATH</arg>, along with all the dependencies and
             metadata needed for installing them. This is one way of transferring flatpaks
             between computers that doesn't require an Internet connection. After using
-            this comand, the USB drive can be connected to another computer and
-            <command>flatpak install</command> will prefer to install from it rather than
-            the Internet if the refs are the newest available. For this process to work a
-            collection ID must be configured on the relevant remotes on both the source
-            and destination computers, and on the remote server.
+            this command, the USB drive can be connected to another computer which already has the
+            relevant remote(s) configured, and Flatpak will install or update from the drive offline
+            (see below). If online, the drive will be used as a cache, meaning some objects will be
+            pulled from it and others from the Internet. For this process to work a collection ID
+            must be configured on the relevant remotes on both the source and destination computers,
+            and on the remote server.
         </para>
         <para>
-            Each <arg choice="plain">REF</arg> argument is a full or partial indentifier in the
+            On the destination computer one can install from the USB (or any mounted filesystem)
+            using the <option>--sideload-repo</option> option with <command>flatpak install</command>.
+            It's also possible to configure sideload paths using symlinks; see
+            <citerefentry><refentrytitle>flatpak</refentrytitle><manvolnum>1</manvolnum></citerefentry>.
+            Flatpak also includes systemd units to automatically sideload from hot-plugged USB drives,
+            but these may or may not be enabled depending on your Linux distribution.
+        </para>
+        <para>
+            Each <arg choice="plain">REF</arg> argument is a full or partial identifier in the
             flatpak ref format, which looks like "(app|runtime)/ID/ARCH/BRANCH". All elements
             except ID are optional and can be left out, including the slashes,
             so most of the time you need only specify ID. Any part left out will be matched
@@ -153,6 +162,16 @@
             </varlistentry>
 
             <varlistentry>
+                <term><option>--allow-partial</option></term>
+
+                <listitem><para>
+                  Don't print a warning when exporting partially installed commits, for example locale extensions without all
+                  languages. These can cause problems when installing them, for example if the language config is different
+                  on the installing side.
+                </para></listitem>
+            </varlistentry>
+
+            <varlistentry>
                 <term><option>-v</option></term>
                 <term><option>--verbose</option></term>
 
@@ -186,6 +205,7 @@
 
         <para>
             <citerefentry><refentrytitle>flatpak</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
+            <citerefentry><refentrytitle>flatpak remote-modify</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
             <citerefentry><refentrytitle>flatpak-install</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
             <citerefentry><refentrytitle>flatpak-list</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
             <citerefentry><refentrytitle>ostree-create-usb</refentrytitle><manvolnum>1</manvolnum></citerefentry>

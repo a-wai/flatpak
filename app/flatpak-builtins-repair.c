@@ -79,7 +79,7 @@ fsck_one_object (OstreeRepo      *repo,
           else
             {
               g_printerr (_("%s, deleting object\n"), local_error->message);
-              (void)ostree_repo_delete_object (repo, objtype, checksum, NULL, NULL);
+              (void) ostree_repo_delete_object (repo, objtype, checksum, NULL, NULL);
             }
           return FSCK_STATUS_HAS_INVALID_OBJECTS;
         }
@@ -122,7 +122,6 @@ fsck_dirtree (OstreeRepo *repo,
               GHashTable *object_status_cache)
 {
   OstreeRepoCommitIterResult iterres;
-
   g_autoptr(GError) local_error = NULL;
   FsckStatus status = 0;
   g_autoptr(GVariant) key = NULL;
@@ -167,11 +166,11 @@ fsck_dirtree (OstreeRepo *repo,
               else if (iterres == OSTREE_REPO_COMMIT_ITER_RESULT_FILE)
                 {
                   char *name;
-                  char *checksum;
+                  char *commit_checksum;
                   FsckStatus file_status;
 
-                  ostree_repo_commit_traverse_iter_get_file (&iter, &name, &checksum);
-                  file_status = fsck_leaf_object (repo, checksum, OSTREE_OBJECT_TYPE_FILE, object_status_cache);
+                  ostree_repo_commit_traverse_iter_get_file (&iter, &name, &commit_checksum);
+                  file_status = fsck_leaf_object (repo, commit_checksum, OSTREE_OBJECT_TYPE_FILE, object_status_cache);
                   status = MAX (status, file_status);
                 }
               else if (iterres == OSTREE_REPO_COMMIT_ITER_RESULT_DIR)
@@ -251,9 +250,9 @@ fsck_commit (OstreeRepo *repo,
 static void
 transaction_add_local_ref (FlatpakDir         *dir,
                            FlatpakTransaction *transaction,
-                           const char         *ref)
+                           FlatpakDecomposed  *ref)
 {
-  g_autoptr(GVariant) deploy_data = NULL;
+  g_autoptr(GBytes) deploy_data = NULL;
   g_autoptr(GError) local_error = NULL;
   g_autofree char *repo_checksum = NULL;
   const char *origin;
@@ -263,7 +262,7 @@ transaction_add_local_ref (FlatpakDir         *dir,
   if (deploy_data == NULL)
     {
       if (!g_error_matches (local_error, FLATPAK_ERROR, FLATPAK_ERROR_NOT_INSTALLED))
-        g_printerr (_("Problems loading data for %s: %s\n"), ref, local_error->message);
+        g_printerr (_("Problems loading data for %s: %s\n"), flatpak_decomposed_get_ref (ref), local_error->message);
       g_clear_error (&local_error);
       return;
     }
@@ -271,12 +270,12 @@ transaction_add_local_ref (FlatpakDir         *dir,
   origin = flatpak_deploy_data_get_origin (deploy_data);
   subpaths = flatpak_deploy_data_get_subpaths (deploy_data);
 
-  repo_checksum = flatpak_dir_read_latest (dir, origin, ref, NULL, NULL, NULL);
+  repo_checksum = flatpak_dir_read_latest (dir, origin, flatpak_decomposed_get_ref (ref), NULL, NULL, NULL);
   if (repo_checksum == NULL || opt_reinstall_all)
     {
-      if (!flatpak_transaction_add_install (transaction, origin, ref, subpaths, &local_error))
+      if (!flatpak_transaction_add_install (transaction, origin, flatpak_decomposed_get_ref (ref), subpaths, &local_error))
         {
-          g_printerr (_("Error reinstalling %s: %s\n"), ref, local_error->message);
+          g_printerr (_("Error reinstalling %s: %s\n"), flatpak_decomposed_get_ref (ref), local_error->message);
           g_clear_error (&local_error);
         }
     }
@@ -288,12 +287,11 @@ flatpak_builtin_repair (int argc, char **argv, GCancellable *cancellable, GError
 {
   g_autoptr(GOptionContext) context = NULL;
   g_autoptr(GPtrArray) dirs = NULL;
+  g_autoptr(GPtrArray) refs = NULL;
   FlatpakDir *dir = NULL;
   g_autoptr(GHashTable) all_refs = NULL;
   g_autoptr(GHashTable) invalid_refs = NULL;
   g_autoptr(GHashTable) object_status_cache = NULL;
-  g_auto(GStrv) app_refs = NULL;
-  g_auto(GStrv) runtime_refs = NULL;
   g_autoptr(FlatpakTransaction) transaction = NULL;
   OstreeRepo *repo;
   g_autoptr(GFile) file = NULL;
@@ -325,6 +323,8 @@ flatpak_builtin_repair (int argc, char **argv, GCancellable *cancellable, GError
 
   /*
    * Try to repair a flatpak directory:
+   *  + Delete any mirror refs which may be leaking disk space
+   *    (https://github.com/flatpak/flatpak/issues/3222)
    *  + Scan all locally available refs
    *  + remove ref that don't correspond to a deployed ref
    *  + Verify the commits they point to and all object they reference:
@@ -337,6 +337,9 @@ flatpak_builtin_repair (int argc, char **argv, GCancellable *cancellable, GError
    *  +   if they are not in the repo (or is partial for a non-subdir deploy), re-install them (pull + deploy)
    */
 
+  if (!flatpak_dir_delete_mirror_refs (dir, opt_dry_run, cancellable, error))
+    return FALSE;
+
   object_status_cache = g_hash_table_new_full (ostree_hash_object_name, g_variant_equal,
                                                (GDestroyNotify) g_variant_unref, NULL);
 
@@ -346,55 +349,82 @@ flatpak_builtin_repair (int argc, char **argv, GCancellable *cancellable, GError
   if (!ostree_repo_list_refs (repo, NULL, &all_refs, cancellable, error))
     return FALSE;
 
+  i = 0;
   GLNX_HASH_TABLE_FOREACH_KV (all_refs, const char *, refspec, const char *, checksum)
   {
     g_autofree char *remote = NULL;
     g_autofree char *ref_name = NULL;
     FsckStatus status;
+    g_autoptr(FlatpakDecomposed) ref = NULL;
+    g_autofree char *origin = NULL;
 
     if (!ostree_parse_refspec (refspec, &remote, &ref_name, error))
       return FALSE;
 
     /* Does this look like a regular ref? */
-    if (g_str_has_prefix (ref_name, "app/") || g_str_has_prefix (ref_name, "runtime/"))
+    ref = flatpak_decomposed_new_from_ref (ref_name, NULL);
+    if (ref == NULL)
+      continue;
+
+    origin = flatpak_dir_get_origin (dir, ref, cancellable, NULL);
+
+    /* If so, is it deployed, and from this remote? */
+    if (remote == NULL || g_strcmp0 (origin, remote) != 0)
       {
-        g_autofree char *origin = flatpak_dir_get_origin (dir, ref_name, cancellable, NULL);
-
-        /* If so, is it deployed, and from this remote? */
-        if (remote == NULL || g_strcmp0 (origin, remote) != 0)
+        if (!opt_dry_run)
           {
-            if (!opt_dry_run)
-              {
-                g_print (_("Removing non-deployed ref %s…\n"), refspec);
-                (void) ostree_repo_set_ref_immediate (repo, remote, ref_name, NULL, cancellable, NULL);
-              }
-            else
-              g_print (_("Skipping non-deployed ref %s…\n"), refspec);
-
-            continue;
+            g_print (_("Removing non-deployed ref %s…\n"), refspec);
+            (void) ostree_repo_set_ref_immediate (repo, remote, ref_name, NULL, cancellable, NULL);
           }
+        else
+          g_print (_("Skipping non-deployed ref %s…\n"), refspec);
+
+        continue;
       }
 
-    g_print (_("Verifying %s…\n"), refspec);
+    /* When printing progress, we have to print a newline character at the end, otherwise errors printing in
+       sections of the code that we don't control won't have a leading newline. Therefore, the status line will
+       always print a trailing newline, and here we just go up a line back onto the previous progress line.
+
+       This does also mean that other areas of this code section that print errors will need to print a trailing
+       newline as well, otherwise the output will overwrite any errors. */
+    if (flatpak_fancy_output ())
+      g_print ("\033[A\r\033[K");
+
+    g_print (_("[%d/%d] Verifying %s…\n"), ++i, g_hash_table_size (all_refs), refspec);
 
     status = fsck_commit (repo, checksum, object_status_cache);
-    if (status != FSCK_STATUS_OK && !opt_dry_run)
+    if (status != FSCK_STATUS_OK)
       {
+        if (opt_dry_run)
+          g_printerr (_("Dry run: "));
+
         switch (status)
           {
           case FSCK_STATUS_HAS_MISSING_OBJECTS:
             g_printerr (_("Deleting ref %s due to missing objects\n"), refspec);
             break;
+
           case FSCK_STATUS_HAS_INVALID_OBJECTS:
             g_printerr (_("Deleting ref %s due to invalid objects\n"), refspec);
             break;
+
           default:
             g_printerr (_("Deleting ref %s due to %d\n"), refspec, status);
             break;
           }
-        (void) ostree_repo_set_ref_immediate (repo, remote, ref_name, NULL, cancellable, NULL);
+
+        if (!opt_dry_run)
+          (void) ostree_repo_set_ref_immediate (repo, remote, ref_name, NULL, cancellable, NULL);
+
+        /* If using fancy output, print another trailing newline, so the next progress line won't overwrite
+           these errors. */
+        if (flatpak_fancy_output () && i < g_hash_table_size (all_refs))
+          g_print ("\n");
       }
   }
+
+  g_print (_("Checking remotes...\n"));
 
   GLNX_HASH_TABLE_FOREACH_KV (all_refs, const char *, refspec, const char *, checksum)
   {
@@ -433,11 +463,8 @@ flatpak_builtin_repair (int argc, char **argv, GCancellable *cancellable, GError
         return FALSE;
     }
 
-  if (!flatpak_dir_list_refs (dir, "app", &app_refs, cancellable, NULL))
-    return FALSE;
-
-  if (!flatpak_dir_list_refs (dir, "runtime", &runtime_refs, cancellable, NULL))
-    return FALSE;
+  refs = flatpak_dir_list_refs (dir, FLATPAK_KINDS_APP | FLATPAK_KINDS_RUNTIME,
+                                cancellable, error);
 
   transaction = flatpak_quiet_transaction_new (dir, error);
   if (transaction == NULL)
@@ -447,17 +474,9 @@ flatpak_builtin_repair (int argc, char **argv, GCancellable *cancellable, GError
   flatpak_transaction_set_disable_related (transaction, TRUE);
   flatpak_transaction_set_reinstall (transaction, TRUE);
 
-  for (i = 0; app_refs[i] != NULL; i++)
+  for (i = 0; i < refs->len; i++)
     {
-      const char *ref = app_refs[i];
-
-      transaction_add_local_ref (dir, transaction, ref);
-    }
-
-  for (i = 0; runtime_refs[i] != NULL; i++)
-    {
-      const char *ref = runtime_refs[i];
-
+      FlatpakDecomposed *ref = g_ptr_array_index (refs, i);
       transaction_add_local_ref (dir, transaction, ref);
     }
 
@@ -494,9 +513,9 @@ flatpak_builtin_repair (int argc, char **argv, GCancellable *cancellable, GError
                 g_prefix_error (error, _("While removing appstream for %s: "), remote);
                 return FALSE;
               }
-          
+
             if (!flatpak_dir_deploy_appstream (dir, remote, parts[1], &changed,
-                 cancellable, error))
+                                               cancellable, error))
               {
                 g_prefix_error (error, _("While deploying appstream for %s: "), remote);
                 return FALSE;

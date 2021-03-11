@@ -14,8 +14,8 @@ AC_PREREQ([2.63])
 # on the unstable (ie master), interface age = 0
 
 m4_define([flatpak_major_version], [1])
-m4_define([flatpak_minor_version], [2])
-m4_define([flatpak_micro_version], [5])
+m4_define([flatpak_minor_version], [10])
+m4_define([flatpak_micro_version], [1])
 m4_define([flatpak_extra_version], [])
 m4_define([flatpak_interface_age], [0])
 m4_define([flatpak_binary_age],
@@ -30,9 +30,9 @@ AC_INIT([Flatpak],
         [http://flatpak.org/])
 
 GLIB_REQS=2.44
-SYSTEM_BWRAP_REQS=0.2.1
+SYSTEM_BWRAP_REQS=0.4.0
 SYSTEM_DBUS_PROXY_REQS=0.1.0
-OSTREE_REQS=2018.9
+OSTREE_REQS=2020.8
 
 AC_USE_SYSTEM_EXTENSIONS
 AC_SYS_LARGEFILE
@@ -64,6 +64,7 @@ dnl This list is shared with https://github.com/ostreedev/ostree
 CC_CHECK_FLAGS_APPEND([WARN_CFLAGS], [CFLAGS], [\
 -pipe \
 -Wall \
+-Werror=shadow \
 -Werror=empty-body \
 -Werror=strict-prototypes \
 -Werror=missing-prototypes \
@@ -120,6 +121,15 @@ AC_ARG_WITH([systemdsystemunitdir],
     dnl .../lib, never .../lib64 or .../lib/x86_64-linux-gnu
     [with_systemdsystemunitdir='${prefix}/lib/systemd/system'])
 AC_SUBST([systemdsystemunitdir], [$with_systemdsystemunitdir])
+
+AC_ARG_WITH([systemdsystemenvgendir],
+            [AS_HELP_STRING([--with-systemdsystemenvgendir=DIR],
+                            [Directory for systemd system environment generators (default=PREFIX/lib/systemd/system-environment-generators)])],
+    [],
+    dnl This is deliberately not ${libdir}: systemd units always go in
+    dnl .../lib, never .../lib64 or .../lib/x86_64-linux-gnu
+    [with_systemdsystemenvgendir='${prefix}/lib/systemd/system-environment-generators'])
+AC_SUBST([systemdsystemenvgendir], [$with_systemdsystemenvgendir])
 
 AC_ARG_WITH([systemduserenvgendir],
             [AS_HELP_STRING([--with-systemduserenvgendir=DIR],
@@ -210,19 +220,42 @@ AC_SUBST([GDBUS_CODEGEN], [`$PKG_CONFIG --variable gdbus_codegen gio-2.0`])
 
 POLKIT_GOBJECT_REQUIRED=0.98
 
-PKG_CHECK_MODULES(BASE, [glib-2.0 >= $GLIB_REQS gio-2.0 gio-unix-2.0 libarchive >= 2.8.0 libxml-2.0 >= 2.4 ])
+PKG_CHECK_MODULES(ARCHIVE, [libarchive >= 2.8.0])
+PKG_CHECK_MODULES(BASE, [glib-2.0 >= $GLIB_REQS gio-2.0 gio-unix-2.0])
 PKG_CHECK_MODULES(SOUP, [libsoup-2.4])
+PKG_CHECK_MODULES(XML, [libxml-2.0 >= 2.4])
+PKG_CHECK_MODULES(ZSTD, [libzstd >= 0.8.1], [have_zstd=yes], [have_zstd=no])
+if test $have_zstd = yes; then
+  AC_DEFINE(HAVE_ZSTD, 1, [Define if libzstd is available])
+fi
 PKG_CHECK_MODULES(DCONF, [dconf >= 0.26], [have_dconf=yes], [have_dconf=no])
 if test $have_dconf = yes; then
   AC_DEFINE(HAVE_DCONF, 1, [Define if dconf is available])
 fi
-PKG_CHECK_MODULES(SYSTEMD, [libsystemd], [have_libsystemd=yes], [have_libsystemd=no])
-if test $have_libsystemd = yes; then
-  AC_DEFINE(HAVE_LIBSYSTEMD, 1, [Define if libsystemd is available])
+AC_ARG_WITH([systemd], AS_HELP_STRING([--with-systemd],
+    [Build with systemd support [default=auto]]), [], [with_systemd=auto],)
+if test "x$with_systemd" != "xno"; then
+  PKG_CHECK_MODULES(SYSTEMD, [libsystemd], [have_libsystemd=yes], [have_libsystemd=no])
+  if test $have_libsystemd = yes; then
+    AC_DEFINE(HAVE_LIBSYSTEMD, 1, [Define if libsystemd is available])
+  elif test "x$with_systemd" == "xyes"; then
+    AC_MSG_ERROR([systemd was requested but it could not be found])
+  fi
+else
+  have_libsystemd=no
 fi
+PKG_CHECK_MODULES([MALCONTENT], [malcontent-0 >= 0.4.0], [have_libmalcontent=yes], [have_libmalcontent=no])
+AS_IF([test "$have_libmalcontent" = "yes"],[
+  AC_DEFINE([HAVE_LIBMALCONTENT], [1], [Define if libmalcontent is available])
+])
+AM_CONDITIONAL([HAVE_LIBMALCONTENT],[test "$have_libmalcontent" = "yes"])
+
+PKG_CHECK_MODULES(GLIB260, glib-2.0 >= 2.60,
+                  [AC_DEFINE(GLIB_VERSION_MIN_REQUIRED, GLIB_VERSION_2_60, [Ignore massive GTimeVal deprecation warnings in 2.62])],
+                  [true])
 
 save_LIBS=$LIBS
-LIBS=$BASE_LIBS
+LIBS=$ARCHIVE_LIBS
 AC_CHECK_FUNCS(archive_read_support_filter_all)
 LIBS=$save_LIBS
 
@@ -236,6 +269,17 @@ AS_IF([ test x$have_gpgme = xno ], [
    AC_MSG_ERROR([Need GPGME_PTHREAD version $LIBGPGME_DEPENDENCY or later])
 ])
 
+AC_ARG_ENABLE(selinux-module,
+        [AS_HELP_STRING([--enable-selinux-module],[Enable selinux module for system-helper])],
+        enable_selinux_module=$enableval, enable_selinux_module=auto)
+if test x$enable_selinux_module = xauto ; then
+   AC_CHECK_FILE([/usr/share/selinux/devel/Makefile], [enable_selinux_module=yes],  [enable_selinux_module=no])
+fi
+if test x$enable_selinux_module = xyes ; then
+   AC_CHECK_FILE([/usr/share/selinux/devel/Makefile], [],  [AC_MSG_ERROR([selinux-policy-devel needed to build selinux module])])
+fi
+AM_CONDITIONAL(BUILD_SELINUX_MODULE, test x$enable_selinux_module = xyes)
+
 AC_ARG_ENABLE([system-helper],
               AC_HELP_STRING([--disable-system-helper],
                              [Disable system helper]),
@@ -248,6 +292,15 @@ if test "x$enable_system_helper" = "xyes"; then
 fi
 AM_CONDITIONAL(BUILD_SYSTEM_HELPER, test x$enable_system_helper = xyes)
 
+AC_ARG_ENABLE([auto-sideloading],
+              AC_HELP_STRING([--enable-auto-sideloading],
+                             [Enable systemd units which make Flatpak sideload from inserted USB drives]),
+              [],
+              [enable_auto_sideloading=no])
+AM_CONDITIONAL(BUILD_AUTO_SIDELOADING, test x$enable_auto_sideloading = xyes)
+
+PKG_CHECK_MODULES(FUSE, fuse >= 2.9.2)
+
 AC_ARG_ENABLE([xauth],
               AC_HELP_STRING([--disable-xauth],
                              [Disable Xauth use]),
@@ -258,6 +311,11 @@ if test "x$enable_xauth" = "xyes"; then
    AC_DEFINE([ENABLE_XAUTH], [1],
       [Define if using xauth])
 fi
+
+AC_ARG_ENABLE([gdm-env-file],
+              [AC_HELP_STRING([--enable-gdm-env-file], [Install gdm env.d file (not needed if systemd generators work)])],
+              install_gdm_env_file=$enableval, install_gdm_env_file=no)
+AM_CONDITIONAL(INSTALL_GDM_ENV_FILE, test x$install_gdm_env_file = xyes)
 
 AC_ARG_ENABLE([sandboxed-triggers],
               AC_HELP_STRING([--disable-sandboxed-triggers],
@@ -302,6 +360,13 @@ AC_ARG_ENABLE(sudo,
               [SUDO_BIN="sudo"], [SUDO_BIN=""])
 AC_SUBST([SUDO_BIN])
 
+AC_ARG_ENABLE(asan,
+              [AS_HELP_STRING([--enable-asan],
+                              [Use build with address sanitazion])],
+              [],
+              [enable_asan=no])
+AM_CONDITIONAL([ENABLE_ASAN], [test "x$enable_asan" = xyes])
+
 AC_ARG_WITH(system-install-dir,
            [AS_HELP_STRING([--with-system-install-dir=DIR],
                            [Location of system installation [LOCALSTATEDIR/lib/flatpak]])],
@@ -309,6 +374,30 @@ AC_ARG_WITH(system-install-dir,
            [with_system_install_dir='$(localstatedir)/lib/flatpak'])
 SYSTEM_INSTALL_DIR=$with_system_install_dir
 AC_SUBST(SYSTEM_INSTALL_DIR)
+
+AC_ARG_WITH(run-media-dir,
+           [AS_HELP_STRING([--with-run-media-dir=DIR],
+                           [Location of auto-mounted USB drives [/run/media]])],
+           [],
+           [with_run_media_dir='/run/media'])
+RUN_MEDIA_DIR=$with_run_media_dir
+AC_SUBST(RUN_MEDIA_DIR)
+
+AC_ARG_WITH([sysusersdir],
+            [AS_HELP_STRING([--with-sysusersdir=DIR],
+                            [Directory for systemd sysusers.d configuration files (default=PREFIX/lib/sysusers.d)])],
+    [],
+    dnl This is deliberately not ${libdir}: systemd units always go in
+    dnl .../lib, never .../lib64 or .../lib/x86_64-linux-gnu
+    [with_sysusersdir='${prefix}/lib/sysusers.d'])
+AC_SUBST([sysusersdir], [$with_sysusersdir])
+
+AC_ARG_WITH(system-helper-user,
+           [AS_HELP_STRING([--with-system-helper-user=USERNAME],
+                           [Name of the system helper user])],
+           with_system_helper_user="$withval", with_system_helper_user=flatpak)
+SYSTEM_HELPER_USER=$with_system_helper_user
+AC_SUBST(SYSTEM_HELPER_USER)
 
 AC_ARG_ENABLE(documentation,
               AC_HELP_STRING([--enable-documentation], [Build documentation]),,
@@ -320,8 +409,8 @@ if test x$enable_documentation = xyes; then
    fi
 
   dnl check for DocBook DTD in the local catalog
-  JH_CHECK_XML_CATALOG([-//OASIS//DTD DocBook XML V4.1.2//EN],
-     [DocBook XML DTD V4.1.2], [have_docbook_dtd=yes], [have_docbook_dtd=no])
+  JH_CHECK_XML_CATALOG([-//OASIS//DTD DocBook XML V4.5//EN],
+     [DocBook XML DTD V4.5], [have_docbook_dtd=yes], [have_docbook_dtd=no])
   if test "$have_docbook_dtd" != yes; then
     AC_MSG_ERROR([DocBook DTD is required for --enable-documentation])
   fi
@@ -435,6 +524,17 @@ if test x$use_lcov = xyes; then
   LDFLAGS="$LDFLAGS -lgcov"
 fi
 
+AC_ARG_ENABLE(internal-checks,
+  AS_HELP_STRING([--enable-internal-checks],
+                 [enable internal checking]),
+  [use_internal_checks=$enableval], [use_internal_checks=no])
+
+if test x$use_internal_checks = xyes; then
+   AM_CONDITIONAL([ENABLE_INTERNAL_CHECKS], [true])
+else
+   AM_CONDITIONAL([ENABLE_INTERNAL_CHECKS], [false])
+fi
+
 GLIB_TESTS
 
 FLATPAK_MAJOR_VERSION=flatpak_major_version
@@ -497,6 +597,7 @@ echo "          Flatpak $FLATPAK_VERSION"
 echo "          ============="
 echo ""
 echo "          Build system helper:    $enable_system_helper"
+echo "          Build selinux module:   $enable_selinux_module"
 echo "          Build bubblewrap:       $build_bwrap"
 echo "          Build dbus-proxy:       $build_dbus_proxy"
 echo "          Use sandboxed triggers: $enable_sandboxed_triggers"
@@ -505,4 +606,7 @@ echo "          Privileged group:       $PRIVILEGED_GROUP"
 echo "          Privilege mode:         $with_priv_mode"
 echo "          Use dconf:              $have_dconf"
 echo "          Use libsystemd:         $have_libsystemd"
+echo "          Use libmalcontent:      $have_libmalcontent"
+echo "          Use libzstd:            $have_zstd"
+echo "          Use auto sideloading:   $enable_auto_sideloading"
 echo ""

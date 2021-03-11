@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
-    "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
+    "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 
 <refentry id="flatpak-flatpakref">
 
@@ -77,7 +77,7 @@
                 </varlistentry>
                 <varlistentry>
                     <term><option>Name</option> (string)</term>
-                    <listitem><para>The fully qualified name of the runtime that is used by the application. This key is mandatory.</para></listitem>
+                    <listitem><para>The fully qualified name of the runtime or application. This key is mandatory.</para></listitem>
                 </varlistentry>
                 <varlistentry>
                     <term><option>Url</option> (string)</term>
@@ -132,7 +132,9 @@
                 </varlistentry>
                 <varlistentry>
                     <term><option>RuntimeRepo</option> (string)</term>
-                    <listitem><para>The url for a .flatpakrepo file for the remote where the runtime can be found.</para></listitem>
+                    <listitem><para>The url for a .flatpakrepo file for the remote where the runtime can be found.
+                    Note that if the runtime is available in the remote providing the app, that remote may be
+                    used instead but the one specified by this option will still be added.</para></listitem>
                 </varlistentry>
                 <varlistentry>
                     <term><option>SuggestRemoteName</option> (string)</term>
@@ -146,7 +148,7 @@
         <title>Example</title>
 <programlisting>
 [Flatpak Ref]
-Title=GEdit
+Title=gedit
 Name=org.gnome.gedit
 Branch=stable
 Url=http://sdk.gnome.org/repo-apps/

@@ -24,20 +24,20 @@ set -euo pipefail
 # This test looks for specific localized strings.
 export LC_ALL=C
 
-echo "1..10"
+echo "1..11"
 
 ${FLATPAK} --version > version_out
 
 VERSION=`cat "$test_builddir/package_version.txt"`
 assert_file_has_content version_out "^Flatpak $VERSION$"
 
-echo "ok version"
+ok "version"
 
 ${FLATPAK} --help > help_out
 
 assert_file_has_content help_out "^Usage:$"
 
-echo "ok help"
+ok "help"
 
 ${FLATPAK} --default-arch > arch
 
@@ -45,14 +45,24 @@ ${FLATPAK} --supported-arches > arches
 
 assert_streq `head -1 arches` `cat arch`
 
-echo "ok default arch"
+ok "default arch"
+
+${FLATPAK} --print-updated-env > updated_env
+${FLATPAK} --print-updated-env --print-system-only > updated_env_system
+
+assert_file_has_content updated_env "exports/share"
+assert_file_has_content updated_env "^XDG_DATA_DIRS="
+assert_file_has_content updated_env_system "exports/share"
+assert_file_has_content updated_env_system "^XDG_DATA_DIRS="
+
+ok "print updated env"
 
 ${FLATPAK} --gl-drivers > drivers
 
 assert_file_has_content drivers "^default$";
 assert_file_has_content drivers "^host$";
 
-echo "ok gl drivers"
+ok "gl drivers"
 
 for cmd in install update uninstall list info config repair create-usb \
            search run override make-current enter ps document-export \
@@ -60,7 +70,8 @@ for cmd in install update uninstall list info config repair create-usb \
            permissions permission-show permission-reset remotes remote-add \
            remote-modify remote-delete remote-ls remote-info build-init \
            build build-finish build-export build-bundle build-import-bundle \
-           build-sign build-update-repo build-commit-from repo kill history;
+           build-sign build-update-repo build-commit-from repo kill history \
+           mask;
 do
   ${FLATPAK} $cmd --help | head -2 > help_out
 
@@ -68,7 +79,7 @@ do
   assert_file_has_content help_out "flatpak $cmd"
 done
 
-echo "ok command help"
+ok "command help"
 
 for cmd in list ps remote-ls remotes documents history;
 do
@@ -79,28 +90,28 @@ do
   assert_file_has_content help_out "^  help"
 done
 
-echo "ok columns help"
+ok "columns help"
 
 ${FLATPAK} >out 2>&1 || true
 
 assert_file_has_content out "^error: No command specified$"
 assert_file_has_content out "flatpak --help"
 
-echo "ok missing command"
+ok "missing command"
 
 ${FLATPAK} indo >out 2>&1 || true
 
 assert_file_has_content out "^error: .* 'info'"
 assert_file_has_content out "flatpak --help"
 
-echo "ok misspelt command"
+ok "misspelt command"
 
 ${FLATPAK} info >out 2>&1 || true
 
 assert_file_has_content out "^error: NAME must be specified$"
 assert_file_has_content out "flatpak info --help"
 
-echo "ok info missing NAME"
+ok "info missing NAME"
 
 for cmd in config make-current override remote-add repair; do
   ${FLATPAK} $cmd --system --user >out 2>&1 || true
@@ -113,4 +124,4 @@ for cmd in config make-current override remote-add repair; do
   assert_file_has_content out "^error: Multiple installations specified"
 done
 
-echo "ok ONE_DIR commands"
+ok "ONE_DIR commands"

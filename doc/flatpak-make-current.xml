@@ -1,6 +1,6 @@
 <?xml version='1.0'?> <!--*-nxml-*-->
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.2//EN"
-    "http://www.oasis-open.org/docbook/xml/4.2/docbookx.dtd">
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.5//EN"
+    "http://www.oasis-open.org/docbook/xml/4.5/docbookx.dtd">
 
 <refentry id="flatpak-make-current">
 
@@ -102,7 +102,8 @@
                 <term><option>--arch=ARCH</option></term>
 
                 <listitem><para>
-                    The architecture to install for.
+                    The architecture to make current for. See <command>flatpak --supported-arches</command>
+                    for architectures supported by the host.
                 </para></listitem>
             </varlistentry>
 
@@ -129,7 +130,7 @@
         <title>Examples</title>
 
         <para>
-            <command>$ flatpak --user make-current org.gnome.GEdit 3.14</command>
+            <command>$ flatpak --user make-current org.gnome.gedit 3.14</command>
         </para>
 
     </refsect1>
