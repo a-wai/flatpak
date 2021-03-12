@@ -1,0 +1,1413 @@
+From ce90195d9f9dcf06078a2ef9599b524d51712b60 Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Wed, 10 Mar 2021 18:18:36 +0100
+Subject: [PATCH 24/26] tests: ensure existing tests pass with ED25519
+ signatures
+
+This commit adds the relevant `--sign` and `--sign-verify` options to
+tests so we can check ED25519 signatures and verification logic work
+fine and existing tests still pass with this feature enabled.
+
+As ED25519 signatures are always supported in flatpak, we check if the
+feature is available in ostree to decide whether we can use those
+signatures in the tests.
+---
+ tests/libtest.sh                          |  56 ++-
+ tests/make-test-app.sh                    |   8 +-
+ tests/make-test-runtime.sh                |   2 +-
+ tests/test-auth.sh                        |   2 +-
+ tests/test-bundle.sh                      |  20 +-
+ tests/test-oci-registry.sh                |  23 +-
+ tests/test-repo.sh                        |  16 +-
+ tests/test-run.sh                         |  26 +-
+ tests/test-sideload.sh                    |   4 +
+ tests/test-subset.sh                      |   8 +-
+ tests/test-summaries.sh                   |  10 +-
+ tests/test-unused.sh                      |  10 +-
+ tests/test-update-remote-configuration.sh |  52 ++-
+ tests/testlibrary.c                       | 399 +++++++++++++---------
+ 14 files changed, 412 insertions(+), 224 deletions(-)
+
+diff --git a/tests/libtest.sh b/tests/libtest.sh
+index 0b0fda8e..7e8fd06e 100644
+--- a/tests/libtest.sh
++++ b/tests/libtest.sh
+@@ -287,11 +287,37 @@ else
+     export FL_GPG_BASE642=
+ fi
+ 
++if ostree --version | grep -q -e '- sign-ed25519'; then
++    export FL_SIGN_ENABLED="yes"
++    export FL_SIGN_PUBKEY="B3a86SmB+sby/N5onaxTXjK1OEAbZOI2fsdr3kKD+KE="
++    export FL_SIGN_PUBKEY2="ZNO1G9znCBZcVEg5xD57mw/xbqkYLQ65l5kPONDbJS0="
++    export FL_SIGN_PRIVKEY="m8/rp9I9ax2w81yujZyeXTfZlbeBjEBUPQSQKo14iHgHdrzpKYH6xvL83midrFNeMrU4QBtk4jZ+x2veQoP4oQ=="
++    export FL_SIGN_PRIVKEY2="YCfgdnZI5jadZVUuQIOXBsmYqC3CB6Zo2aaaZeDHj7hk07Ub3OcIFlxUSDnEPnubD/FuqRgtDrmXmQ840NslLQ=="
++
++    mkdir -p ${TEST_DATA_DIR}/ed25519
++    export FL_SIGN_KEYFILE=${TEST_DATA_DIR}/ed25519/public
++    export FL_SIGN_KEYFILE2=${TEST_DATA_DIR}/ed25519/public.2
++
++    echo ${FL_SIGN_PUBKEY2} > ${FL_SIGN_KEYFILE}
++    echo ${FL_SIGN_PUBKEY} >> ${FL_SIGN_KEYFILE}
++    echo ${FL_SIGN_PUBKEY2} > ${FL_SIGN_KEYFILE2}
++
++    export FL_SIGNARGS="--sign=${FL_SIGN_PRIVKEY}"
++else
++    export FL_SIGN_ENABLED="no"
++    export FL_SIGN_PUBKEY=
++    export FL_SIGN_PUBKEY2=
++    export FL_SIGN_PRIVKEY=
++    export FL_SIGN_PRIVKEY2=
++    export FL_SIGNARGS=
++fi
++
+ make_runtime () {
+     REPONAME="$1"
+     COLLECTION_ID="$2"
+     BRANCH="$3"
+     GPGARGS="$4"
++    SIGNARGS="$5"
+ 
+     RUNTIME_REF="runtime/org.test.Platform/$(flatpak --default-arch)/${BRANCH}"
+     if [ ! -z "${SRC_RUNTIME_REPO:-}" ]; then
+@@ -318,7 +344,7 @@ make_runtime () {
+         ostree --repo=repos/${REPONAME} init --mode=archive-z2 ${collection_args}
+     fi
+ 
+-    flatpak build-commit-from --disable-fsync --no-update-summary --src-repo=${RUNTIME_REPO} --force ${GPGARGS} ${EXPORT_ARGS-}  repos/${REPONAME}  ${RUNTIME_REF}
++    flatpak build-commit-from --disable-fsync --no-update-summary --src-repo=${RUNTIME_REPO} --force ${GPGARGS} ${SIGNARGS} ${EXPORT_ARGS-}  repos/${REPONAME}  ${RUNTIME_REF}
+ }
+ 
+ httpd () {
+@@ -344,8 +370,9 @@ setup_repo_no_add () {
+     fi
+     BRANCH=${3:-master}
+ 
+-    make_runtime "${REPONAME}" "${COLLECTION_ID}" "${BRANCH}" "${GPGARGS:-${FL_GPGARGS}}"
+-    GPGARGS="${GPGARGS:-${FL_GPGARGS}}" $(dirname $0)/make-test-app.sh repos/${REPONAME} "" "${BRANCH}" "${COLLECTION_ID}" > /dev/null
++    make_runtime "${REPONAME}" "${COLLECTION_ID}" "${BRANCH}" "${GPGARGS:-${FL_GPGARGS}}" "${SIGNARGS:-${FL_SIGNARGS}}"
++    GPGARGS="${GPGARGS:-${FL_GPGARGS}}" SIGNARGS="${SIGNARGS:-${FL_SIGNARGS}}" $(dirname $0)/make-test-app.sh \
++                repos/${REPONAME} "" "${BRANCH}" "${COLLECTION_ID}" > /dev/null
+     update_repo $REPONAME "${COLLECTION_ID}"
+     if [ $REPONAME == "test" ]; then
+         httpd
+@@ -369,8 +396,13 @@ setup_repo () {
+     else
+         collection_args=
+     fi
++    if [ x${FL_SIGN_ENABLED} == xyes ] && [ x${SIGNPUBKEY:-${FL_SIGN_PUBKEY}} != x ]; then
++        sign_args=--sign-verify=ed25519=inline:${SIGNPUBKEY:-${FL_SIGN_PUBKEY}}
++    else
++        sign_args=
++    fi
+ 
+-    flatpak remote-add ${U} ${collection_args} ${import_args} ${REPONAME}-repo "http://127.0.0.1:${port}/$REPONAME"
++    flatpak remote-add ${U} ${collection_args} ${import_args} ${sign_args} ${REPONAME}-repo "http://127.0.0.1:${port}/$REPONAME"
+ }
+ 
+ setup_empty_repo () {
+@@ -401,8 +433,13 @@ setup_empty_repo () {
+     else
+         collection_args=
+     fi
++    if [ x${FL_SIGN_ENABLED} == xyes ] && [ x${SIGNPUBKEY:-${FL_SIGN_PUBKEY}} != x ]; then
++        sign_args=--sign-verify=ed25519=inline:${SIGNPUBKEY:-${FL_SIGN_PUBKEY}}
++    else
++        sign_args=
++    fi
+ 
+-    flatpak remote-add ${U} ${collection_args} ${import_args} ${REPONAME}-repo "http://127.0.0.1:${port}/$REPONAME"
++    flatpak remote-add ${U} ${collection_args} ${import_args} ${sign_args} ${REPONAME}-repo "http://127.0.0.1:${port}/$REPONAME"
+ }
+ 
+ update_repo () {
+@@ -415,7 +452,7 @@ update_repo () {
+         collection_args=
+     fi
+ 
+-    ${FLATPAK} build-update-repo ${BUILD_UPDATE_REPO_FLAGS-} ${collection_args} ${GPGARGS:-${FL_GPGARGS}} ${UPDATE_REPO_ARGS-} repos/${REPONAME}
++    ${FLATPAK} build-update-repo ${BUILD_UPDATE_REPO_FLAGS-} ${collection_args} ${GPGARGS:-${FL_GPGARGS}} ${SIGNARGS:-${FL_SIGNARGS}} ${UPDATE_REPO_ARGS-} repos/${REPONAME}
+     if [ x${SUMMARY_FORMAT-} == xold ] ; then
+         assert_not_has_file repos/${REPONAME}/summary.idx
+     else
+@@ -435,7 +472,8 @@ make_updated_app () {
+     APP_ID=${5:-""}
+     RUNTIME_BRANCH=${6:-$BRANCH}
+ 
+-    RUNTIME_BRANCH=$RUNTIME_BRANCH GPGARGS="${GPGARGS:-${FL_GPGARGS}}" $(dirname $0)/make-test-app.sh repos/${REPONAME} "${APP_ID}" "${BRANCH}" "${COLLECTION_ID}" "${TEXT}" > /dev/null
++    RUNTIME_BRANCH=$RUNTIME_BRANCH GPGARGS="${GPGARGS:-${FL_GPGARGS}}" SIGNARGS="${SIGNARGS:-${FL_SIGNARGS}}" $(dirname $0)/make-test-app.sh \
++            repos/${REPONAME} "${APP_ID}" "${BRANCH}" "${COLLECTION_ID}" "${TEXT}" > /dev/null
+     update_repo $REPONAME "${COLLECTION_ID}"
+ }
+ 
+@@ -449,7 +487,7 @@ make_updated_runtime () {
+     BRANCH=${3:-master}
+     TEXT=${4:-UPDATED}
+ 
+-    GPGARGS="${GPGARGS:-${FL_GPGARGS}}" $(dirname $0)/make-test-runtime.sh repos/${REPONAME} org.test.Platform "${BRANCH}" "${COLLECTION_ID}" "${TEXT}" > /dev/null
++    GPGARGS="${GPGARGS:-${FL_GPGARGS}}" SIGNARGS="${SIGNARGS:-${FL_SIGNARGS}}" $(dirname $0)/make-test-runtime.sh repos/${REPONAME} org.test.Platform "${BRANCH}" "${COLLECTION_ID}" "${TEXT}" > /dev/null
+     update_repo $REPONAME "${COLLECTION_ID}"
+ }
+ 
+@@ -462,7 +500,7 @@ setup_sdk_repo () {
+     fi
+     BRANCH=${3:-master}
+ 
+-    GPGARGS="${GPGARGS:-${FL_GPGARGS}}" . $(dirname $0)/make-test-runtime.sh repos/${REPONAME} org.test.Sdk "${BRANCH}" "${COLLECTION_ID}" "" make mkdir cp touch > /dev/null
++    GPGARGS="${GPGARGS:-${FL_GPGARGS}}" SIGNARGS="${SIGNARGS:-${FL_SIGNARGS}}" . $(dirname $0)/make-test-runtime.sh repos/${REPONAME} org.test.Sdk "${BRANCH}" "${COLLECTION_ID}" "" make mkdir cp touch > /dev/null
+     update_repo $REPONAME "${COLLECTION_ID}"
+ }
+ 
+diff --git a/tests/make-test-app.sh b/tests/make-test-app.sh
+index 7975d1cf..1a86fef6 100755
+--- a/tests/make-test-app.sh
++++ b/tests/make-test-app.sh
+@@ -130,7 +130,7 @@ ln -s -t ${DIR}/files/share/locale ../../share/runtime/locale/fr/share/fr
+ 
+ flatpak build-finish ${BUILD_FINISH_ARGS-} --command=hello.sh ${DIR}
+ mkdir -p repos
+-flatpak build-export --no-update-summary --disable-sandbox ${collection_args} ${GPGARGS-} ${EXPORT_ARGS-} ${REPO} ${DIR} ${BRANCH}
++flatpak build-export --no-update-summary --disable-sandbox ${collection_args} ${GPGARGS-} ${SIGNARGS-} ${EXPORT_ARGS-} ${REPO} ${DIR} ${BRANCH}
+ rm -rf ${DIR}
+ 
+ # build a locale extension
+@@ -161,5 +161,5 @@ msgfmt --output-file ${DIR}/files/fr/share/fr/LC_MESSAGES/helloworld.mo fr.po
+ 
+ flatpak build-finish ${DIR}
+ mkdir -p repos
+-flatpak build-export --no-update-summary --runtime ${collection_args} ${GPGARGS-} ${EXPORT_ARGS-} ${REPO} ${DIR} ${BRANCH}
++flatpak build-export --no-update-summary --runtime ${collection_args} ${GPGARGS-} ${SIGNARGS-} ${EXPORT_ARGS-} ${REPO} ${DIR} ${BRANCH}
+ rm -rf ${DIR}
+diff --git a/tests/make-test-runtime.sh b/tests/make-test-runtime.sh
+index 7358ad98..9ba17480 100755
+--- a/tests/make-test-runtime.sh
++++ b/tests/make-test-runtime.sh
+@@ -97,5 +97,5 @@ else
+ fi
+ 
+ mkdir -p repos
+-flatpak build-export ${collection_args} --no-update-summary --disable-sandbox --runtime ${GPGARGS-} ${EXPORT_ARGS-} ${REPO} ${DIR} ${BRANCH}
++flatpak build-export ${collection_args} --no-update-summary --disable-sandbox --runtime ${GPGARGS-} ${SIGNARGS-} ${EXPORT_ARGS-} ${REPO} ${DIR} ${BRANCH}
+ rm -rf ${DIR}
+diff --git a/tests/test-auth.sh b/tests/test-auth.sh
+index 78ff48b6..74275138 100755
+--- a/tests/test-auth.sh
++++ b/tests/test-auth.sh
+@@ -113,7 +113,7 @@ make_updated_app test "" master UPDATE3
+ ${FLATPAK} ${U} update -y org.test.Hello
+ 
+ # Use build-commit-from to add it to a new version
+-$FLATPAK build-commit-from  --no-update-summary ${FL_GPGARGS} --token-type=2 --disable-fsync --src-ref=app/org.test.Hello/$ARCH/master repos/test app/org.test.Hello/$ARCH/copy
++$FLATPAK build-commit-from  --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} --token-type=2 --disable-fsync --src-ref=app/org.test.Hello/$ARCH/master repos/test app/org.test.Hello/$ARCH/copy
+ update_repo
+ mark_need_token app/org.test.Hello/$ARCH/copy the-secret
+ 
+diff --git a/tests/test-bundle.sh b/tests/test-bundle.sh
+index 6be5c305..9e1660d1 100755
+--- a/tests/test-bundle.sh
++++ b/tests/test-bundle.sh
+@@ -26,31 +26,37 @@ skip_without_bwrap
+ echo "1..8"
+ 
+ OPT_GPG_KEYS=
++OPT_SIGN_KEYS=
++OPT_SIGN_VERIFY=
+ if [ x${FLATPAK_USE_GPG} == xyes ]; then
+     OPT_GPG_KEYS="--gpg-keys=${FL_GPG_HOMEDIR}/pubring.gpg"
+ fi
++if [ x${FL_SIGN_ENABLED} == xyes ]; then
++    OPT_SIGN_KEYS="--sign=${FL_SIGN_PRIVKEY}"
++    OPT_SIGN_VERIFY="--sign-verify=ed25519=inline:${FL_SIGN_PUBKEY}"
++fi
+ 
+ mkdir bundles
+ 
+ setup_repo
+ 
+-${FLATPAK} build-bundle repos/test --repo-url=file://`pwd`/repos/test ${OPT_GPG_KEYS} bundles/hello.flatpak org.test.Hello
++${FLATPAK} build-bundle repos/test --repo-url=file://`pwd`/repos/test ${OPT_GPG_KEYS} ${OPT_SIGN_KEYS} bundles/hello.flatpak org.test.Hello
+ assert_has_file bundles/hello.flatpak
+ 
+-${FLATPAK} build-bundle repos/test --runtime --repo-url=file://`pwd`/repos/test ${OPT_GPG_KEYS} bundles/platform.flatpak org.test.Platform
++${FLATPAK} build-bundle repos/test --runtime --repo-url=file://`pwd`/repos/test ${OPT_GPG_KEYS} ${OPT_SIGN_KEYS} bundles/platform.flatpak org.test.Platform
+ assert_has_file bundles/platform.flatpak
+ 
+ ok "create bundles server-side"
+ 
+ rm bundles/hello.flatpak
+ ${FLATPAK} ${U} install -y test-repo org.test.Hello
+-${FLATPAK} build-bundle $FL_DIR/repo --repo-url=file://`pwd`/repos/test ${OPT_GPG_KEYS} bundles/hello.flatpak org.test.Hello
++${FLATPAK} build-bundle $FL_DIR/repo --repo-url=file://`pwd`/repos/test ${OPT_GPG_KEYS} ${OPT_SIGN_KEYS} bundles/hello.flatpak org.test.Hello
+ assert_has_file bundles/hello.flatpak
+ 
+ ok "create bundles client-side"
+ 
+ ${FLATPAK} uninstall ${U} -y org.test.Hello
+-${FLATPAK} install ${U} -y --bundle bundles/hello.flatpak
++${FLATPAK} install ${U} -y --bundle ${OPT_SIGN_VERIFY} bundles/hello.flatpak
+ 
+ # This should have installed the runtime dependency too
+ assert_has_file $FL_DIR/repo/refs/remotes/test-repo/runtime/org.test.Platform/$ARCH/master
+@@ -106,7 +112,7 @@ ${FLATPAK} uninstall -y --force-remove ${U} org.test.Platform
+ 
+ assert_not_has_file $FL_DIR/repo/refs/remotes/platform-origin/runtime/org.test.Platform/$ARCH/master
+ 
+-${FLATPAK} install -y ${U} --bundle bundles/platform.flatpak
++${FLATPAK} install -y ${U} ${OPT_SIGN_VERIFY} --bundle bundles/platform.flatpak
+ 
+ assert_has_file $FL_DIR/repo/refs/remotes/platform-origin/runtime/org.test.Platform/$ARCH/master
+ RUNTIME_COMMIT=`cat $FL_DIR/repo/refs/remotes/platform-origin/runtime/org.test.Platform/$ARCH/master`
+@@ -172,10 +178,10 @@ ok "update"
+ 
+ make_updated_app test org.test.Collection.test master UPDATED2
+ 
+-${FLATPAK} build-bundle repos/test --repo-url=file://`pwd`/repos/test ${OPT_GPG_KEYS} bundles/hello2.flatpak org.test.Hello
++${FLATPAK} build-bundle repos/test --repo-url=file://`pwd`/repos/test ${OPT_GPG_KEYS} ${OPT_SIGN_KEYS} bundles/hello2.flatpak org.test.Hello
+ assert_has_file bundles/hello2.flatpak
+ 
+-${FLATPAK} install ${U} -y --bundle bundles/hello2.flatpak
++${FLATPAK} install ${U} -y --bundle ${OPT_SIGN_VERIFY} bundles/hello2.flatpak
+ 
+ NEW2_COMMIT=`${FLATPAK} ${U} info --show-commit org.test.Hello`
+ 
+diff --git a/tests/test-oci-registry.sh b/tests/test-oci-registry.sh
+index 3beb4a3a..20c1a652 100755
+--- a/tests/test-oci-registry.sh
++++ b/tests/test-oci-registry.sh
+@@ -25,6 +25,11 @@ skip_without_bwrap
+ 
+ echo "1..14"
+ 
++OPT_SIGN_VERIFY=
++if [ x${FL_SIGN_ENABLED} == xyes ]; then
++    OPT_SIGN_VERIFY="--sign-verify=ed25519=inline:${FL_SIGN_PUBKEY}"
++fi
++
+ # Start the fake registry server
+ 
+ httpd oci-registry-server.py .
+@@ -35,10 +40,10 @@ setup_repo_no_add oci
+ 
+ # Add OCI bundles to it
+ 
+-${FLATPAK} build-bundle --runtime --oci $FL_GPGARGS repos/oci oci/platform-image org.test.Platform
++${FLATPAK} build-bundle --runtime --oci $FL_GPGARGS $FL_SIGNARGS repos/oci oci/platform-image org.test.Platform
+ $client add platform latest $(pwd)/oci/platform-image
+ 
+-${FLATPAK} build-bundle --oci $FL_GPGARGS repos/oci oci/app-image org.test.Hello
++${FLATPAK} build-bundle --oci $FL_GPGARGS $FL_SIGNARGS repos/oci oci/app-image org.test.Hello
+ $client add hello latest $(pwd)/oci/app-image
+ 
+ # Add an OCI remote
+@@ -101,7 +106,7 @@ ok "install"
+ 
+ make_updated_app oci
+ 
+-${FLATPAK} build-bundle --oci $FL_GPGARGS repos/oci oci/app-image org.test.Hello
++${FLATPAK} build-bundle --oci $FL_GPGARGS $FL_SIGNARGS repos/oci oci/app-image org.test.Hello
+ 
+ $client add hello latest $(pwd)/oci/app-image
+ 
+@@ -214,9 +219,9 @@ ok "prune origin remote"
+ 
+ # Install from a (non-OCI) bundle, check that the repo-url is respected
+ 
+-${FLATPAK} build-bundle --runtime --repo-url "oci+http://127.0.0.1:${port}" $FL_GPGARGS repos/oci org.test.Platform.flatpak org.test.Platform
++${FLATPAK} build-bundle --runtime --repo-url "oci+http://127.0.0.1:${port}" $FL_GPGARGS $FL_SIGNARGS repos/oci org.test.Platform.flatpak org.test.Platform
+ 
+-${FLATPAK} ${U} install -y --bundle org.test.Platform.flatpak
++${FLATPAK} ${U} install -y --bundle ${OPT_SIGN_VERIFY} org.test.Platform.flatpak
+ 
+ ${FLATPAK} remotes -d > remotes-list
+ assert_file_has_content remotes-list "^platform-origin.*[ 	]oci+http://127\.0\.0\.1:${port}"
+@@ -227,9 +232,9 @@ ok "install via bundle"
+ 
+ # Install an app from a bundle
+ 
+-${FLATPAK} build-bundle --repo-url "oci+http://127.0.0.1:${port}" $FL_GPGARGS repos/oci org.test.Hello.flatpak org.test.Hello
++${FLATPAK} build-bundle --repo-url "oci+http://127.0.0.1:${port}" $FL_GPGARGS $FL_SIGNARGS repos/oci org.test.Hello.flatpak org.test.Hello
+ 
+-${FLATPAK} ${U} install -y --bundle org.test.Hello.flatpak
++${FLATPAK} ${U} install -y --bundle ${OPT_SIGN_VERIFY} org.test.Hello.flatpak
+ 
+ ${FLATPAK} remotes -d > remotes-list
+ assert_file_has_content remotes-list "^hello-origin.*[ 	]oci+http://127\.0\.0\.1:${port}"
+@@ -241,9 +246,9 @@ ok "app install via bundle"
+ # Install an updated app bundle with a different origin
+ 
+ make_updated_app oci
+-${FLATPAK} build-bundle --repo-url "http://127.0.0.1:${port}" $FL_GPGARGS repos/oci org.test.Hello.flatpak org.test.Hello
++${FLATPAK} build-bundle --repo-url "http://127.0.0.1:${port}" $FL_GPGARGS $FL_SIGNARGS repos/oci org.test.Hello.flatpak org.test.Hello
+ 
+-${FLATPAK} ${U} install -y --bundle org.test.Hello.flatpak
++${FLATPAK} ${U} install -y --bundle ${OPT_SIGN_VERIFY} org.test.Hello.flatpak
+ 
+ ${FLATPAK} remotes -d > remotes-list
+ assert_file_has_content remotes-list "^hello-origin.*[ 	]http://127\.0\.0\.1:${port}"
+diff --git a/tests/test-repo.sh b/tests/test-repo.sh
+index 56d6cea7..c1483a16 100644
+--- a/tests/test-repo.sh
++++ b/tests/test-repo.sh
+@@ -34,13 +34,13 @@ fi
+ setup_repo
+ 
+ ALT_GPG_PUBRING=
+-OPT_NO_VERIFY=
++OPT_NO_VERIFY="--no-sign-verify"
+ OPT_GPG_IMPORT=
+ OPT_GPG_IMPORT2=
++OPT_SIGN_VERIFY="--sign-verify=ed25519=inline:${FL_SIGN_PUBKEY}"
+ 
+ if [ "$FLATPAK_USE_GPG" = "yes" ]; then
+     ALT_GPG_PUBRING="${FL_GPG_HOMEDIR2}/pubring.gpg"
+-    OPT_NO_VERIFY="--no-gpg-verify"
+     OPT_GPG_IMPORT="--gpg-import=${FL_GPG_HOMEDIR}/pubring.gpg"
+     OPT_GPG_IMPORT2="--gpg-import=${ALT_GPG_PUBRING}"
+ fi
+@@ -95,7 +95,7 @@ fi
+ 
+ # Remove new appstream branch so we can test deploying the old one
+ rm -rf repos/test/refs/heads/appstream2
+-${FLATPAK} build-update-repo ${BUILD_UPDATE_REPO_FLAGS-} --no-update-appstream ${FL_GPGARGS} repos/test
++${FLATPAK} build-update-repo ${BUILD_UPDATE_REPO_FLAGS-} --no-update-appstream ${FL_GPGARGS} ${FL_SIGNARGS} repos/test
+ 
+ flatpak ${U} --appstream update test-repo
+ 
+@@ -213,6 +213,7 @@ Version=1
+ Url=http://127.0.0.1:$(cat httpd-port)/flatpakref/
+ Title=The Title
+ GPGKey=${FL_GPG_BASE64}
++SignatureKey=${FL_SIGN_PUBKEY}
+ EOF
+ 
+ if [ x${USE_COLLECTIONS_IN_CLIENT-} == xyes ]; then
+@@ -225,6 +226,7 @@ Name=org.test.Hello
+ Branch=master
+ Url=http://127.0.0.1:$(cat httpd-port)/flatpakref
+ GPGKey=${FL_GPG_BASE64}
++SignatureKey=${FL_SIGN_PUBKEY}
+ RuntimeRepo=http://127.0.0.1:$(cat httpd-port)/flatpakref/flatpakref-repo.flatpakrepo
+ EOF
+ 
+@@ -279,7 +281,7 @@ make_required_version_app () {
+         CID=""
+     fi
+ 
+-    REQUIRED_VERSION="${VERSION}" GPGARGS="${FL_GPGARGS}" $(dirname $0)/make-test-app.sh repos/test ${APP_ID} master "${CID}" > /dev/null
++    REQUIRED_VERSION="${VERSION}" GPGARGS="${FL_GPGARGS}" SIGNARGS="${FL_SIGNARGS}" $(dirname $0)/make-test-app.sh repos/test ${APP_ID} master "${CID}" > /dev/null
+ }
+ 
+ CURRENT_VERSION=`cat "$test_builddir/package_version.txt"`
+@@ -416,7 +418,7 @@ else
+ fi
+ 
+ ostree init --repo=repos/test-rebase --mode=archive-z2 ${rebase_collection_args}
+-${FLATPAK} build-commit-from --no-update-summary --src-repo=repos/test ${FL_GPGARGS} repos/test-rebase app/org.test.Hello/$ARCH/master runtime/org.test.Hello.Locale/$ARCH/master
++${FLATPAK} build-commit-from --no-update-summary --src-repo=repos/test ${FL_GPGARGS} ${FL_SIGNARGS} repos/test-rebase app/org.test.Hello/$ARCH/master runtime/org.test.Hello.Locale/$ARCH/master
+ update_repo test-rebase ${REBASE_COLLECTION_ID}
+ 
+ flatpak remote-add ${U} ${OPT_GPG_IMPORT} test-rebase "http://127.0.0.1:${port}/test-rebase"
+@@ -428,8 +430,8 @@ ${CMD_PREFIX} flatpak run --command=bash org.test.Hello -c 'echo foo > $XDG_DATA
+ assert_has_dir $HOME/.var/app/org.test.Hello
+ assert_has_file $HOME/.var/app/org.test.Hello/data/a-file
+ 
+-${FLATPAK} build-commit-from --no-update-summary --end-of-life-rebase=org.test.Hello=org.test.NewHello --src-repo=repos/test ${FL_GPGARGS} repos/test-rebase app/org.test.Hello/$ARCH/master runtime/org.test.Hello.Locale/$ARCH/master
+-GPGARGS="${FL_GPGARGS}" $(dirname $0)/make-test-app.sh repos/test-rebase org.test.NewHello master "${REBASE_COLLECTION_ID}" "NEW" > /dev/null
++${FLATPAK} build-commit-from --no-update-summary --end-of-life-rebase=org.test.Hello=org.test.NewHello --src-repo=repos/test ${FL_GPGARGS} ${FL_SIGNARGS} repos/test-rebase app/org.test.Hello/$ARCH/master runtime/org.test.Hello.Locale/$ARCH/master
++GPGARGS="${FL_GPGARGS}" SIGNARGS="${FL_SIGNARGS}" $(dirname $0)/make-test-app.sh repos/test-rebase org.test.NewHello master "${REBASE_COLLECTION_ID}" "NEW" > /dev/null
+ update_repo test-rebase
+ 
+ ${FLATPAK} ${U} update -y org.test.Hello
+diff --git a/tests/test-run.sh b/tests/test-run.sh
+index 3c344df1..cf948e94 100644
+--- a/tests/test-run.sh
++++ b/tests/test-run.sh
+@@ -311,7 +311,7 @@ echo "d" > ${DIR}/files/d/data
+ echo "nope" > ${DIR}/files/nope
+ 
+ ${FLATPAK} build-finish --command=hello.sh ${DIR}
+-${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} repos/test ${DIR} stable
++${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} repos/test ${DIR} stable
+ update_repo
+ 
+ ${FLATPAK} ${U} install -y test-repo org.test.Split --subpath=/a --subpath=/b --subpath=/nosuchdir stable
+@@ -337,7 +337,7 @@ mkdir -p ${DIR}/files/f
+ echo "f" > ${DIR}/files/f/data
+ rm -rf  ${DIR}/files/b
+ 
+-${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} repos/test ${DIR} stable
++${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} repos/test ${DIR} stable
+ update_repo
+ 
+ ${FLATPAK} ${U} update -y --subpath=/a --subpath=/b --subpath=/e --subpath=/nosuchdir org.test.Split
+@@ -357,7 +357,7 @@ assert_has_file $FL_DIR/app/org.test.Split/$ARCH/stable/active/files/e/data
+ assert_not_has_file $FL_DIR/app/org.test.Split/$ARCH/stable/active/files/f
+ assert_not_has_file $FL_DIR/app/org.test.Split/$ARCH/stable/active/files/nope
+ 
+-${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} repos/test ${DIR} stable
++${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} repos/test ${DIR} stable
+ update_repo
+ 
+ # Test reusing the old subpath list
+@@ -385,15 +385,15 @@ VERSION=`cat "$test_builddir/package_version.txt"`
+ DIR=`mktemp -d`
+ ${FLATPAK} build-init ${DIR} org.test.CurrentVersion org.test.Platform org.test.Platform stable
+ ${FLATPAK} build-finish --require-version=${VERSION} --command=hello.sh ${DIR}
+-${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} repos/test ${DIR} stable
++${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} repos/test ${DIR} stable
+ DIR=`mktemp -d`
+ ${FLATPAK} build-init ${DIR} org.test.OldVersion org.test.Platform org.test.Platform stable
+ ${FLATPAK} build-finish --require-version=0.6.10 --command=hello.sh ${DIR}
+-${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} repos/test ${DIR} stable
++${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} repos/test ${DIR} stable
+ DIR=`mktemp -d`
+ ${FLATPAK} build-init ${DIR} org.test.NewVersion org.test.Platform org.test.Platform stable
+ ${FLATPAK} build-finish --require-version=1${VERSION} --command=hello.sh ${DIR}
+-${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} repos/test ${DIR} stable
++${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} repos/test ${DIR} stable
+ 
+ update_repo
+ 
+@@ -404,7 +404,7 @@ ${FLATPAK} ${U} install -y test-repo org.test.CurrentVersion stable
+ DIR=`mktemp -d`
+ ${FLATPAK} build-init ${DIR} org.test.OldVersion org.test.Platform org.test.Platform stable
+ ${FLATPAK} build-finish --require-version=99.0.0 --command=hello.sh ${DIR}
+-${FLATPAK} build-export  --no-update-summary ${FL_GPGARGS} repos/test ${DIR} stable
++${FLATPAK} build-export  --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} repos/test ${DIR} stable
+ update_repo
+ 
+ (! ${FLATPAK} ${U} update -y org.test.OldVersion)
+@@ -412,7 +412,7 @@ update_repo
+ DIR=`mktemp -d`
+ ${FLATPAK} build-init ${DIR} org.test.OldVersion org.test.Platform org.test.Platform stable
+ ${FLATPAK} build-finish --require-version=0.1.1 --command=hello.sh ${DIR}
+-${FLATPAK} build-export  --no-update-summary ${FL_GPGARGS} repos/test ${DIR} stable
++${FLATPAK} build-export  --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} repos/test ${DIR} stable
+ update_repo
+ 
+ ${FLATPAK} ${U} update -y org.test.OldVersion
+@@ -425,12 +425,12 @@ DIR=`mktemp -d`
+ ${FLATPAK} build-init ${DIR} org.test.CurrentVersion org.test.Platform org.test.Platform stable
+ touch ${DIR}/files/updated
+ ${FLATPAK} build-finish --require-version=99.0.0 --command=hello.sh ${DIR}
+-${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} repos/test ${DIR} stable
++${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} repos/test ${DIR} stable
+ DIR=`mktemp -d`
+ ${FLATPAK} build-init ${DIR} org.test.OldVersion org.test.Platform org.test.Platform stable
+ touch ${DIR}/files/updated
+ ${FLATPAK} build-finish --require-version=${VERSION} --command=hello.sh ${DIR}
+-${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} repos/test ${DIR} stable
++${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} repos/test ${DIR} stable
+ update_repo
+ 
+ if ${FLATPAK} ${U} update -y &> err_version.txt; then
+@@ -450,7 +450,7 @@ chmod a+rwx app/files/a-dir
+ flatpak build-finish --command=hello.sh app
+ # Note: not --canonical-permissions
+ ${FLATPAK} build-export -vv  --no-update-summary --disable-sandbox --files=files repos/test app stable
+-ostree --repo=repos/test commit  --keep-metadata=xa.metadata --owner-uid=0 --owner-gid=0  --no-xattrs  ${FL_GPGARGS} --branch=app/org.test.Writable/$ARCH/stable app
++ostree --repo=repos/test commit  --keep-metadata=xa.metadata --owner-uid=0 --owner-gid=0  --no-xattrs  ${FL_GPGARGS} ${FL_SIGNARGS} --branch=app/org.test.Writable/$ARCH/stable app
+ update_repo
+ 
+ # In the system-helper case this fails to install due to the permission canonicalization happening in the
+@@ -470,7 +470,7 @@ chmod u+s app/files/exe
+ flatpak build-finish --command=hello.sh app
+ # Note: not --canonical-permissions
+ ${FLATPAK} build-export -vv  --no-update-summary --disable-sandbox --files=files repos/test app stable
+-ostree -v --repo=repos/test commit --keep-metadata=xa.metadata --owner-uid=0 --owner-gid=0 --no-xattrs  ${FL_GPGARGS} --branch=app/org.test.Setuid/$ARCH/stable app
++ostree -v --repo=repos/test commit --keep-metadata=xa.metadata --owner-uid=0 --owner-gid=0 --no-xattrs  ${FL_GPGARGS} ${FL_SIGNARGS} --branch=app/org.test.Setuid/$ARCH/stable app
+ update_repo
+ 
+ if ${FLATPAK} ${U} install -y test-repo org.test.Setuid &> err2.txt; then
+@@ -485,7 +485,7 @@ flatpak build-init app org.test.App org.test.Platform org.test.Platform stable
+ mkdir -p app/files/
+ touch app/files/exe
+ flatpak build-finish --command=hello.sh --sdk=org.test.Sdk app
+-${FLATPAK} build-export  --no-update-summary ${FL_GPGARGS} repos/test app stable
++${FLATPAK} build-export  --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} repos/test app stable
+ update_repo
+ 
+ ${FLATPAK} ${U} install -y test-repo org.test.App
+diff --git a/tests/test-sideload.sh b/tests/test-sideload.sh
+index d4861de2..37204a0b 100644
+--- a/tests/test-sideload.sh
++++ b/tests/test-sideload.sh
+@@ -27,6 +27,10 @@ USE_COLLECTIONS_IN_CLIENT=yes
+ skip_without_bwrap
+ skip_revokefs_without_fuse
+ 
++if [ x${FLATPAK_USE_GPG} != xyes ] && [ x${FL_SIGN_ENABLED} != xyes ]; then
++    skip "Verification disabled, can't create sideloaded repo"
++fi
++
+ if [ x${FLATPAK_USE_GPG} == xyes ]; then
+     echo "1..9"
+ else
+diff --git a/tests/test-subset.sh b/tests/test-subset.sh
+index 292f46c6..a7f2f549 100644
+--- a/tests/test-subset.sh
++++ b/tests/test-subset.sh
+@@ -36,10 +36,10 @@ $FLATPAK repo --branches repos/test > repo-all.txt
+ assert_file_has_content repo-all.txt "app/org.test.Hello/$ARCH/master"
+ assert_file_has_content repo-all.txt "runtime/org.test.Platform/$ARCH/master"
+ 
+-EXPORT_ARGS="--subset=subset1 " GPGARGS="${FL_GPGARGS}" $(dirname $0)/make-test-app.sh repos/test org.test.SubsetOne master ""
+-EXPORT_ARGS="--subset=subset2 " GPGARGS="${FL_GPGARGS}" $(dirname $0)/make-test-app.sh repos/test org.test.SubsetTwo master ""
+-EXPORT_ARGS="" GPGARGS="${FL_GPGARGS}" $(dirname $0)/make-test-app.sh repos/test org.test.NoSubset master ""
+-${FLATPAK} build-update-repo ${BUILD_UPDATE_REPO_FLAGS-} ${FL_GPGARGS} repos/test
++EXPORT_ARGS="--subset=subset1 " GPGARGS="${FL_GPGARGS}" SIGNARGS="${FL_SIGNARGS}" $(dirname $0)/make-test-app.sh repos/test org.test.SubsetOne master ""
++EXPORT_ARGS="--subset=subset2 " GPGARGS="${FL_GPGARGS}" SIGNARGS="${FL_SIGNARGS}" $(dirname $0)/make-test-app.sh repos/test org.test.SubsetTwo master ""
++EXPORT_ARGS="" GPGARGS="${FL_GPGARGS}" SIGNARGS="${FL_SIGNARGS}" $(dirname $0)/make-test-app.sh repos/test org.test.NoSubset master ""
++${FLATPAK} build-update-repo ${BUILD_UPDATE_REPO_FLAGS-} ${FL_GPGARGS} ${FL_SIGNARGS} repos/test
+ 
+ $FLATPAK repo repos/test > repo-info.txt
+ assert_file_has_content repo-info.txt "Subsummaries: .*subset1-$ARCH.*"
+diff --git a/tests/test-summaries.sh b/tests/test-summaries.sh
+index 8671f090..dc86cab0 100755
+--- a/tests/test-summaries.sh
++++ b/tests/test-summaries.sh
+@@ -71,7 +71,7 @@ EOF
+     cp $(dirname $0)/org.test.Hello.png ${DIR}/files/share/app-info/icons/flatpak/64x64/${APP_ID}.png
+ 
+     $FLATPAK build-finish --command=hello.sh ${DIR} &> /dev/null
+-    $FLATPAK build-export --no-update-summary ${GPGARGS} --arch=$APPARCH --disable-sandbox  ${REPO} ${DIR} &> /dev/null
++    $FLATPAK build-export --no-update-summary ${GPGARGS} ${FL_SIGNARGS} --arch=$APPARCH --disable-sandbox  ${REPO} ${DIR} &> /dev/null
+     rm -rf ${DIR}
+ }
+ 
+@@ -152,7 +152,7 @@ ARCHES=${!arches[@]}
+ for A in $ARCHES; do
+     # Create runtimes for all arches (based on $ARCH version)
+     if [ $A != $ARCH ]; then
+-        $FLATPAK build-commit-from  ${GPGARGS} --src-ref=runtime/org.test.Platform/$ARCH/master repos/test runtime/org.test.Platform/$A/master
++        $FLATPAK build-commit-from  ${GPGARGS} ${FL_SIGNARGS} --src-ref=runtime/org.test.Platform/$ARCH/master repos/test runtime/org.test.Platform/$A/master
+     fi
+ 
+     # Create a bunch of apps (for all arches)
+@@ -197,7 +197,7 @@ assert_has_file $FL_CACHE_DIR/summaries/test-repo-${OTHER_ARCH}-${ACTIVE_SUBSET_
+ assert_file_has_content httpd-log summaries/${ACTIVE_SUBSET_OTHER}.gz
+ 
+ # Modify the ARCH subset
+-$FLATPAK build-commit-from ${GPGARGS} --src-ref=app/org.app.App1/$ARCH/master repos/test app/org.app.App1.NEW/$ARCH/master
++$FLATPAK build-commit-from ${GPGARGS} ${FL_SIGNARGS} --src-ref=app/org.app.App1/$ARCH/master repos/test app/org.app.App1.NEW/$ARCH/master
+ 
+ OLD_ACTIVE_SUBSET=$ACTIVE_SUBSET
+ OLD_ACTIVE_SUBSET_OTHER=$ACTIVE_SUBSET_OTHER
+@@ -219,8 +219,8 @@ assert_not_file_has_content httpd-log summaries/${ACTIVE_SUBSET}.gz
+ assert_file_has_content httpd-log summaries/${OLD_ACTIVE_SUBSET}-${ACTIVE_SUBSET}.delta
+ 
+ # Modify the ARCH *and* OTHER_ARCH subset
+-$FLATPAK build-commit-from ${GPGARGS} --src-ref=app/org.app.App1/$ARCH/master repos/test app/org.app.App1.NEW2/$ARCH/master
+-$FLATPAK build-commit-from ${GPGARGS} --src-ref=app/org.app.App1/$OTHER_ARCH/master repos/test app/org.app.App1.NEW2/$OTHER_ARCH/master
++$FLATPAK build-commit-from ${GPGARGS} ${FL_SIGNARGS} --src-ref=app/org.app.App1/$ARCH/master repos/test app/org.app.App1.NEW2/$ARCH/master
++$FLATPAK build-commit-from ${GPGARGS} ${FL_SIGNARGS} --src-ref=app/org.app.App1/$OTHER_ARCH/master repos/test app/org.app.App1.NEW2/$OTHER_ARCH/master
+ 
+ OLD_OLD_ACTIVE_SUBSET=$OLD_ACTIVE_SUBSET
+ OLD_OLD_ACTIVE_SUBSET_OTHER=$OLD_ACTIVE_SUBSET_OTHER
+diff --git a/tests/test-unused.sh b/tests/test-unused.sh
+index d0107d68..27d3ad1a 100755
+--- a/tests/test-unused.sh
++++ b/tests/test-unused.sh
+@@ -32,12 +32,16 @@ echo "1..2"
+ setup_empty_repo &> /dev/null > /dev/null
+ 
+ OPT_GPG_IMPORT=
++OPT_SIGN_VERIFY=
+ if [ x${FLATPAK_USE_GPG} == xyes ]; then
+     OPT_GPG_IMPORT="--gpg-import=${FL_GPG_HOMEDIR}/pubring.gpg"
+ fi
++if [ x${FL_SIGN_ENABLED} == xyes ]; then
++    OPT_SIGN_VERIFY="--sign-verify=ed25519=inline:${FL_SIGN_PUBKEY}"
++fi
+ 
+ # Manually add the user remote too
+-$FLATPAK remote-add --user ${OPT_GPG_IMPORT} test-repo "http://127.0.0.1:${port}/test"
++$FLATPAK remote-add --user ${OPT_GPG_IMPORT} ${OPT_SIGN_VERIFY} test-repo "http://127.0.0.1:${port}/test"
+ 
+ 
+ # This tests the detection of unused refs. Used refs are any that have
+@@ -89,7 +93,7 @@ EOF
+     fi
+ 
+     $FLATPAK build-finish $DIR ${finish_args[$ID]:-} &> /dev/null > /dev/null
+-    $FLATPAK build-export -v ${FL_GPGARGS} --disable-sandbox --runtime repos/test ${DIR} ${BRANCH} &> /dev/null > /dev/null
++    $FLATPAK build-export -v ${FL_GPGARGS} ${FL_SIGNARGS} --disable-sandbox --runtime repos/test ${DIR} ${BRANCH} &> /dev/null > /dev/null
+     rm -rf ${DIR}
+ }
+ 
+@@ -117,7 +121,7 @@ EOF
+     set -x
+     $FLATPAK build-finish ${DIR}  ${finish_args[$ID]:-} &> /dev/null > /dev/null
+ 
+-    $FLATPAK build-export ${FL_GPGARGS} --disable-sandbox repos/test ${DIR} ${BRANCH} &> /dev/null > /dev/null
++    $FLATPAK build-export ${FL_GPGARGS} ${FL_SIGNARGS} --disable-sandbox repos/test ${DIR} ${BRANCH} &> /dev/null > /dev/null
+     rm -rf ${DIR}
+ }
+ 
+diff --git a/tests/test-update-remote-configuration.sh b/tests/test-update-remote-configuration.sh
+index 08b9fcb4..e93097fd 100755
+--- a/tests/test-update-remote-configuration.sh
++++ b/tests/test-update-remote-configuration.sh
+@@ -38,7 +38,7 @@ ${FLATPAK} build-init ${DIR} org.test.App org.test.Platform org.test.Platform
+ mkdir -p ${DIR}/files/a
+ echo "a" > ${DIR}/files/a/data
+ ${FLATPAK} build-finish ${DIR} --socket=x11 --share=network --command=true
+-${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} --update-appstream repos/test ${DIR} master
++${FLATPAK} build-export --no-update-summary ${FL_GPGARGS} ${FL_SIGNARGS} --update-appstream repos/test ${DIR} master
+ update_repo
+ 
+ ${FLATPAK} ${U} install -y test-repo org.test.App master
+@@ -48,20 +48,32 @@ if [ x${FLATPAK_USE_GPG} == xyes ]; then
+     assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
+     assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
+     assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
+-    assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
+ else
+     assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
+     assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
+     assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
+     assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
+-    assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
+ fi
+ 
++if [ x${FL_SIGN_ENABLED} == xyes ]; then
++    assert_file_has_content ${FL_DIR}/repo/config '^sign-verify-summary=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^sign-verify-summary=false$'
++    assert_file_has_content ${FL_DIR}/repo/config '^sign-verify=ed25519$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^sign-verify=false$'
++else
++    assert_file_has_content ${FL_DIR}/repo/config '^sign-verify-summary=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^sign-verify-summary=true$'
++    assert_file_has_content ${FL_DIR}/repo/config '^sign-verify=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^sign-verify=ed25519$'
++fi
++
++assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
++
+ # Change its configuration to include a collection ID, update the repository,
+ # but don’t mark the collection ID as to be deployed yet. Ensure it doesn’t
+ # appear in the client’s configuration.
+ echo -e "[core]\ncollection-id=org.test.Collection" >> repos/test/config
+-${FLATPAK} build-export --no-update-summary  ${FL_GPGARGS} --update-appstream repos/test --collection-id org.test.Collection ${DIR} master
++${FLATPAK} build-export --no-update-summary  ${FL_GPGARGS} ${FL_SIGNARGS} --update-appstream repos/test --collection-id org.test.Collection ${DIR} master
+ UPDATE_REPO_ARGS="--collection-id=org.test.Collection" update_repo
+ 
+ ${FLATPAK} ${U} update -y org.test.App master
+@@ -71,15 +83,27 @@ if [ x${FLATPAK_USE_GPG} == xyes ]; then
+     assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
+     assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
+     assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
+-    assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
+ else
+     assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
+     assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
+     assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
+     assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
+-    assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
+ fi
+ 
++if [ x${FL_SIGN_ENABLED} == xyes ]; then
++    assert_file_has_content ${FL_DIR}/repo/config '^sign-verify-summary=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^sign-verify-summary=false$'
++    assert_file_has_content ${FL_DIR}/repo/config '^sign-verify=ed25519$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^sign-verify=false$'
++else
++    assert_file_has_content ${FL_DIR}/repo/config '^sign-verify-summary=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^sign-verify-summary=true$'
++    assert_file_has_content ${FL_DIR}/repo/config '^sign-verify=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^sign-verify=ed25519$'
++fi
++
++assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
++
+ ok "1 update repo config without deploying collection ID"
+ 
+ # Now mark the collection ID as to be deployed. The client configuration should
+@@ -94,15 +118,27 @@ if [ x${FLATPAK_USE_GPG} == xyes ]; then
+     assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
+     assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
+     assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
+-    assert_file_has_content ${FL_DIR}/repo/config '^collection-id=org\.test\.Collection$'
+ else
+     assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
+     assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
+     assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
+     assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
+-    assert_file_has_content ${FL_DIR}/repo/config '^collection-id=org\.test\.Collection$'
+ fi
+ 
++if [ x${FL_SIGN_ENABLED} == xyes ]; then
++    assert_file_has_content ${FL_DIR}/repo/config '^sign-verify-summary=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^sign-verify-summary=false$'
++    assert_file_has_content ${FL_DIR}/repo/config '^sign-verify=ed25519$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^sign-verify=false$'
++else
++    assert_file_has_content ${FL_DIR}/repo/config '^sign-verify-summary=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^sign-verify-summary=true$'
++    assert_file_has_content ${FL_DIR}/repo/config '^sign-verify=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^sign-verify=ed25519$'
++fi
++
++assert_file_has_content ${FL_DIR}/repo/config '^collection-id=org\.test\.Collection$'
++
+ # Try the deploy for sideload only method
+ sed -i "s/deploy-collection-id=true//" repos/test/config
+ assert_not_file_has_content repos/test/config '^deploy-collection-id=true$'
+diff --git a/tests/testlibrary.c b/tests/testlibrary.c
+index 36b11035..501dea46 100644
+--- a/tests/testlibrary.c
++++ b/tests/testlibrary.c
+@@ -18,18 +18,23 @@ static char *flatpak_systemdir;
+ static char *flatpak_systemcachedir;
+ static char *flatpak_configdir;
+ static char *flatpak_installationsdir;
+-#ifndef FLATPAK_DISABLE_GPG
+-static char *gpg_homedir;
+-static char *gpg_args;
+-#endif
++static char *gpg_homedir = NULL;
++static char *gpg_args = NULL;
++static char *sign_args;
+ static char *repo_collection_id;
+ static char *httpd_port; /* TODO: leaked? */
++#ifndef FLATPAK_DISABLE_GPG
++static gboolean gpg_enabled = TRUE;
++#else
++static gboolean gpg_enabled = FALSE;
++#endif
++static gboolean sign_enabled = FALSE;
+ int httpd_pid = -1;
+ 
+-#ifndef FLATPAK_DISABLE_GPG
+ static const char *gpg_id = "7B0961FD";
+-#endif
+ const char *repo_name = "test-repo";
++const char *sign_key = "m8/rp9I9ax2w81yujZyeXTfZlbeBjEBUPQSQKo14iHgHdrzpKYH6xvL83midrFNeMrU4QBtk4jZ+x2veQoP4oQ==";
++const char *sign_pubkey = "B3a86SmB+sby/N5onaxTXjK1OEAbZOI2fsdr3kKD+KE=";
+ 
+ typedef enum {
+   RUN_TEST_SUBPROCESS_DEFAULT = 0,
+@@ -586,14 +591,11 @@ test_remote_by_name (void)
+   g_assert_cmpint (flatpak_remote_get_remote_type (remote), ==, FLATPAK_REMOTE_TYPE_STATIC);
+   g_assert_false (flatpak_remote_get_noenumerate (remote));
+   g_assert_false (flatpak_remote_get_disabled (remote));
+-#ifndef FLATPAK_DISABLE_GPG
+-  g_assert_true (flatpak_remote_get_gpg_verify (remote));
+-#else
+-  g_assert_false (flatpak_remote_get_gpg_verify (remote));
+-#endif
++  g_assert (flatpak_remote_get_gpg_verify (remote) == gpg_enabled);
+   g_assert_cmpint (flatpak_remote_get_prio (remote), ==, 1);
+ 
+-  g_assert_cmpstr (flatpak_remote_get_collection_id (remote), ==, repo_collection_id);
++  if (gpg_enabled || sign_enabled)
++    g_assert_cmpstr (flatpak_remote_get_collection_id (remote), ==, repo_collection_id);
+ 
+   g_object_get (remote,
+                 "name", &name,
+@@ -629,7 +631,8 @@ test_remote (void)
+   remote = flatpak_installation_get_remote_by_name (inst, repo_name, NULL, &error);
+   g_assert_no_error (error);
+ 
+-  g_assert_cmpstr (flatpak_remote_get_collection_id (remote), ==, repo_collection_id);
++  if (gpg_enabled || sign_enabled)
++    g_assert_cmpstr (flatpak_remote_get_collection_id (remote), ==, repo_collection_id);
+ 
+   /* Flatpak doesn't provide access to gpg-verify-summary, so use ostree */
+   res = flatpak_installation_modify_remote (inst, remote, NULL, &error);
+@@ -644,11 +647,7 @@ test_remote (void)
+   res = ostree_repo_get_remote_boolean_option (repo, repo_name, "gpg-verify-summary", FALSE, &gpg_verify_summary, &error);
+   g_assert_no_error (error);
+   g_assert_true (res);
+-#ifndef FLATPAK_DISABLE_GPG
+-  g_assert_true (gpg_verify_summary);
+-#else
+-  g_assert_false (gpg_verify_summary);
+-#endif
++  g_assert (gpg_verify_summary == gpg_enabled);
+ 
+   /* Temporarily unset the collection ID */
+   flatpak_remote_set_collection_id (remote, NULL);
+@@ -663,14 +662,13 @@ test_remote (void)
+   res = ostree_repo_get_remote_boolean_option (repo, repo_name, "gpg-verify-summary", FALSE, &gpg_verify_summary, &error);
+   g_assert_no_error (error);
+   g_assert_true (res);
+-#ifndef FLATPAK_DISABLE_GPG
+-  g_assert_true (gpg_verify_summary);
+-#else
+-  g_assert_false (gpg_verify_summary);
+-#endif
++  g_assert (gpg_verify_summary == gpg_enabled);
+ 
+-  flatpak_remote_set_collection_id (remote, repo_collection_id);
+-  g_assert_cmpstr (flatpak_remote_get_collection_id (remote), ==, repo_collection_id);
++  if (gpg_enabled || sign_enabled)
++    {
++      flatpak_remote_set_collection_id (remote, repo_collection_id);
++      g_assert_cmpstr (flatpak_remote_get_collection_id (remote), ==, repo_collection_id);
++    }
+ 
+   g_assert_cmpstr (flatpak_remote_get_title (remote), ==, NULL);
+   flatpak_remote_set_title (remote, "Test Repo");
+@@ -696,21 +694,34 @@ test_remote (void)
+   flatpak_remote_set_default_branch (remote, "master");
+   g_assert_cmpstr (flatpak_remote_get_default_branch (remote), ==, "master");
+ 
+-#ifndef FLATPAK_DISABLE_GPG
+-  /* It should be an error to disable GPG while a collection ID is set. */
+-  g_assert_true (flatpak_remote_get_gpg_verify (remote));
+-  flatpak_remote_set_gpg_verify (remote, FALSE);
+-  g_assert_false (flatpak_remote_get_gpg_verify (remote));
+-  res = flatpak_installation_modify_remote (inst, remote, NULL, &error);
+-  g_assert_error (error, FLATPAK_ERROR, FLATPAK_ERROR_INVALID_DATA);
+-  g_clear_error (&error);
+-  g_assert_false (res);
++  if (gpg_enabled)
++    {
++      /* It should be an error to disable signatures while a collection ID is set. */
++      if (gpg_enabled)
++        {
++          g_assert_true (flatpak_remote_get_gpg_verify (remote));
++          flatpak_remote_set_gpg_verify (remote, FALSE);
++          g_assert_false (flatpak_remote_get_gpg_verify (remote));
++        }
+ 
+-  /* Unset the collection ID and try again. */
+-  flatpak_remote_set_collection_id (remote, NULL);
+-  g_assert_cmpstr (flatpak_remote_get_collection_id (remote), ==, NULL);
+-  g_assert_false (flatpak_remote_get_gpg_verify (remote));
+-#endif
++      if (sign_enabled)
++        {
++          g_assert_true (flatpak_remote_get_sign_verify (remote));
++          flatpak_remote_set_sign_verify (remote, FALSE);
++          g_assert_false (flatpak_remote_get_sign_verify (remote));
++        }
++
++      res = flatpak_installation_modify_remote (inst, remote, NULL, &error);
++      g_assert_error (error, FLATPAK_ERROR, FLATPAK_ERROR_INVALID_DATA);
++      g_clear_error (&error);
++      g_assert_false (res);
++
++      /* Unset the collection ID and try again. */
++      flatpak_remote_set_collection_id (remote, NULL);
++      g_assert_cmpstr (flatpak_remote_get_collection_id (remote), ==, NULL);
++      g_assert_false (flatpak_remote_get_gpg_verify (remote));
++      g_assert_false (flatpak_remote_get_sign_verify (remote));
++    }
+ 
+   res = flatpak_installation_modify_remote (inst, remote, NULL, &error);
+   g_assert_no_error (error);
+@@ -735,10 +746,12 @@ test_remote (void)
+   flatpak_remote_set_nodeps (remote, FALSE);
+   flatpak_remote_set_disabled (remote, FALSE);
+   flatpak_remote_set_default_branch (remote, NULL);
+-#ifndef FLATPAK_DISABLE_GPG
+-  flatpak_remote_set_gpg_verify (remote, TRUE);
+-  flatpak_remote_set_collection_id (remote, repo_collection_id);
+-#endif
++  if (gpg_enabled || sign_enabled)
++    {
++      flatpak_remote_set_gpg_verify (remote, gpg_enabled);
++      flatpak_remote_set_sign_verify (remote, sign_enabled);
++      flatpak_remote_set_collection_id (remote, repo_collection_id);
++    }
+ 
+   res = flatpak_installation_modify_remote (inst, remote, NULL, &error);
+   g_assert_no_error (error);
+@@ -975,13 +988,8 @@ test_list_refs_in_remotes (void)
+ 
+   repo_url = g_strdup_printf ("file://%s", repo_dir);
+ 
+-#ifndef FLATPAK_DISABLE_GPG
+-  const char *argv[] = { "flatpak", "remote-add", "--user", "--no-gpg-verify",
+-                         repo_name2, repo_url, NULL };
+-#else
+-  const char *argv[] = { "flatpak", "remote-add", "--user",
++  const char *argv[] = { "flatpak", "remote-add", "--user", "--no-sign-verify",
+                          repo_name2, repo_url, NULL };
+-#endif
+ 
+   /* Add the repo we created above, which holds one collection ID per ref */
+   run_test_subprocess ((char **) argv, RUN_TEST_SUBPROCESS_DEFAULT);
+@@ -1619,7 +1627,8 @@ test_install_launch_uninstall (void)
+   g_assert_cmpstr (flatpak_ref_get_arch (FLATPAK_REF (ref)), ==, flatpak_get_default_arch ());
+   g_assert_cmpstr (flatpak_ref_get_branch (FLATPAK_REF (ref)), ==, "master");
+   g_assert_cmpint (flatpak_ref_get_kind (FLATPAK_REF (ref)), ==, FLATPAK_REF_KIND_RUNTIME);
+-  g_assert_cmpstr (flatpak_ref_get_collection_id (FLATPAK_REF (ref)), ==, repo_collection_id);
++  if (gpg_enabled || sign_enabled)
++    g_assert_cmpstr (flatpak_ref_get_collection_id (FLATPAK_REF (ref)), ==, repo_collection_id);
+ 
+   g_assert_cmpuint (flatpak_installed_ref_get_installed_size (ref), >, 0);
+ 
+@@ -1669,7 +1678,8 @@ test_install_launch_uninstall (void)
+   g_assert_cmpstr (flatpak_ref_get_arch (FLATPAK_REF (ref)), ==, flatpak_get_default_arch ());
+   g_assert_cmpstr (flatpak_ref_get_branch (FLATPAK_REF (ref)), ==, "master");
+   g_assert_cmpint (flatpak_ref_get_kind (FLATPAK_REF (ref)), ==, FLATPAK_REF_KIND_APP);
+-  g_assert_cmpstr (flatpak_ref_get_collection_id (FLATPAK_REF (ref)), ==, repo_collection_id);
++  if (gpg_enabled || sign_enabled)
++    g_assert_cmpstr (flatpak_ref_get_collection_id (FLATPAK_REF (ref)), ==, repo_collection_id);
+ 
+   g_assert_cmpuint (flatpak_installed_ref_get_installed_size (ref), >, 0);
+   g_assert_true (flatpak_installed_ref_get_is_current (ref));
+@@ -2309,19 +2319,33 @@ run_test_subprocess (char                 **argv,
+ static void
+ make_bundle (void)
+ {
++  g_autoptr (GVariantBuilder) builder = NULL;
++  g_autoptr (GVariant) args = NULL;
+   g_autofree char *repo_url = g_strdup_printf ("http://127.0.0.1:%s/test", httpd_port);
+-  g_autofree char *arg2 = g_strdup_printf ("--repo-url=%s", repo_url);
++  g_autofree char *arg_repo_url = g_strdup_printf ("--repo-url=%s", repo_url);
+   g_autofree char *path = g_build_filename (testdir, "bundles", NULL);
+   g_autofree char *file = g_build_filename (path, "hello.flatpak", NULL);
+-  char *argv[] = { "flatpak", "build-bundle", "repo-url", "repos/test", "filename", "org.test.Hello", NULL };
++  g_autofree const char **argv = NULL;
++
++  builder = g_variant_builder_new (G_VARIANT_TYPE_STRING_ARRAY);
++  g_variant_builder_add_value (builder, g_variant_new_string ("flatpak"));
++  g_variant_builder_add_value (builder, g_variant_new_string ("build-bundle"));
++  g_variant_builder_add_value (builder, g_variant_new_string (arg_repo_url));
++
++  if (sign_enabled)
++    g_variant_builder_add_value (builder, g_variant_new_string (sign_args));
++
++  g_variant_builder_add_value (builder, g_variant_new_string ("repos/test"));
++  g_variant_builder_add_value (builder, g_variant_new_string (file));
++  g_variant_builder_add_value (builder, g_variant_new_string ("org.test.Hello"));
+ 
+-  argv[2] = arg2;
+-  argv[4] = file;
++  args = g_variant_builder_end (builder);
++  argv = g_variant_get_strv (args, NULL);
+ 
+   g_debug ("Making dir %s", path);
+   g_mkdir_with_parents (path, S_IRWXU | S_IRWXG | S_IRWXO);
+ 
+-  run_test_subprocess (argv, RUN_TEST_SUBPROCESS_DEFAULT);
++  run_test_subprocess ((char **) argv, RUN_TEST_SUBPROCESS_DEFAULT);
+ }
+ 
+ static void
+@@ -2337,7 +2361,8 @@ make_test_runtime (const char *runtime_repo_name)
+   arg1 = g_strdup_printf ("repos/%s", runtime_repo_name);
+   argv[0] = arg0;
+   argv[1] = arg1;
+-  argv[4] = repo_collection_id;
++  if (gpg_enabled || sign_enabled)
++    argv[4] = repo_collection_id;
+ 
+   run_test_subprocess (argv, RUN_TEST_SUBPROCESS_DEFAULT);
+ }
+@@ -2353,7 +2378,8 @@ make_test_app (const char *app_repo_name)
+   arg1 = g_strdup_printf ("repos/%s", app_repo_name);
+   argv[0] = arg0;
+   argv[1] = arg1;
+-  argv[4] = repo_collection_id;
++  if (gpg_enabled || sign_enabled)
++    argv[4] = repo_collection_id;
+ 
+   run_test_subprocess (argv, RUN_TEST_SUBPROCESS_DEFAULT);
+ }
+@@ -2366,7 +2392,8 @@ update_test_app (void)
+ 
+   arg0 = g_test_build_filename (G_TEST_DIST, "make-test-app.sh", NULL);
+   argv[0] = arg0;
+-  argv[4] = repo_collection_id;
++  if (gpg_enabled || sign_enabled)
++    argv[4] = repo_collection_id;
+ 
+   run_test_subprocess (argv, RUN_TEST_SUBPROCESS_DEFAULT);
+ }
+@@ -2387,45 +2415,47 @@ update_test_app_extension_version (void)
+ static void
+ rename_test_app (const char *update_repo_name)
+ {
+-  g_autofree char *arg5 = NULL;
+-  g_autofree char *arg6 = NULL;
++  g_autoptr (GVariantBuilder) builder = NULL;
++  g_autoptr (GVariant) args = NULL;
++  g_autofree char *src_repo = NULL;
++  g_autofree char *name = NULL;
+   g_autofree char *app_ref = NULL;
+   g_autofree char *app_locale_ref = NULL;
+-#ifndef FLATPAK_DISABLE_GPG
+-  char *argv[] = { "flatpak", "build-commit-from", "--gpg-homedir=", "--gpg-sign=",
+-                   "--end-of-life-rebase=org.test.Hello=org.test.Hello2",
+-                   "--src-repo=",
+-                   NULL, NULL, NULL, NULL };
+-  g_auto(GStrv) gpgargs = NULL;
++  g_autofree const char **argv = NULL;
+ 
+-  gpgargs = g_strsplit (gpg_args, " ", 0);
+-#else
+-  char *argv[] = { "flatpak", "build-commit-from",
+-                   "--end-of-life-rebase=org.test.Hello=org.test.Hello2",
+-                   "--src-repo=",
+-                   NULL, NULL, NULL, NULL };
+-#endif
+-  arg5 = g_strdup_printf ("--src-repo=repos/%s", update_repo_name);
+-  arg6 = g_strdup_printf ("repos/%s", update_repo_name);
++  src_repo = g_strdup_printf ("--src-repo=repos/%s", update_repo_name);
++  name = g_strdup_printf ("repos/%s", update_repo_name);
+   app_ref = g_strdup_printf ("app/org.test.Hello/%s/master",
+                              flatpak_get_default_arch ());
+   app_locale_ref = g_strdup_printf ("runtime/org.test.Hello.Locale/%s/master",
+                                     flatpak_get_default_arch ());
+-#ifndef FLATPAK_DISABLE_GPG
+-  argv[2] = gpgargs[0];
+-  argv[3] = gpgargs[1];
+-  argv[5] = arg5;
+-  argv[6] = arg6;
+-  argv[7] = app_ref;
+-  argv[8] = app_locale_ref;
+-#else
+-  argv[3] = arg5;
+-  argv[4] = arg6;
+-  argv[5] = app_ref;
+-  argv[6] = app_locale_ref;
+-#endif
+ 
+-  run_test_subprocess (argv, RUN_TEST_SUBPROCESS_DEFAULT);
++  builder = g_variant_builder_new (G_VARIANT_TYPE_STRING_ARRAY);
++  g_variant_builder_add_value (builder, g_variant_new_string ("flatpak"));
++  g_variant_builder_add_value (builder, g_variant_new_string ("build-commit-from"));
++
++  if (gpg_enabled)
++    {
++      g_auto(GStrv) gpgargs = NULL;
++      gpgargs = g_strsplit (gpg_args, " ", 0);
++      g_variant_builder_add_value (builder, g_variant_new_string (gpgargs[0]));
++      g_variant_builder_add_value (builder, g_variant_new_string (gpgargs[1]));
++    }
++
++  if (sign_enabled)
++    g_variant_builder_add_value (builder, g_variant_new_string (sign_args));
++
++  g_variant_builder_add_value (builder,
++                         g_variant_new_string ("--end-of-life-rebase=org.test.Hello=org.test.Hello2"));
++  g_variant_builder_add_value (builder, g_variant_new_string (src_repo));
++  g_variant_builder_add_value (builder, g_variant_new_string (name));
++  g_variant_builder_add_value (builder, g_variant_new_string (app_ref));
++  g_variant_builder_add_value (builder, g_variant_new_string (app_locale_ref));
++
++  args = g_variant_builder_end (builder);
++  argv = g_variant_get_strv (args, NULL);
++
++  run_test_subprocess ((char **) argv, RUN_TEST_SUBPROCESS_DEFAULT);
+ }
+ 
+ static void
+@@ -2436,7 +2466,8 @@ update_test_runtime (void)
+ 
+   arg0 = g_test_build_filename (G_TEST_DIST, "make-test-runtime.sh", NULL);
+   argv[0] = arg0;
+-  argv[4] = repo_collection_id;
++  if (gpg_enabled || sign_enabled)
++    argv[4] = repo_collection_id;
+ 
+   run_test_subprocess (argv, RUN_TEST_SUBPROCESS_DEFAULT);
+ }
+@@ -2444,26 +2475,33 @@ update_test_runtime (void)
+ static void
+ update_repo (const char *update_repo_name)
+ {
+-  g_autofree char *arg4 = NULL;
+-#ifndef FLATPAK_DISABLE_GPG
+-  char *argv[] = { "flatpak", "build-update-repo", "--gpg-homedir=", "--gpg-sign=", NULL, NULL };
+-  g_auto(GStrv) gpgargs = NULL;
++  g_autoptr (GVariantBuilder) builder = NULL;
++  g_autoptr (GVariant) args = NULL;
++  g_autofree char *name = NULL;
++  g_autofree const char **argv = NULL;
+ 
+-  gpgargs = g_strsplit (gpg_args, " ", 0);
+-#else
+-  char *argv[] = { "flatpak", "build-update-repo", NULL, NULL };
+-#endif
++  builder = g_variant_builder_new (G_VARIANT_TYPE_STRING_ARRAY);
++  g_variant_builder_add_value (builder, g_variant_new_string ("flatpak"));
++  g_variant_builder_add_value (builder, g_variant_new_string ("build-update-repo"));
+ 
+-  arg4 = g_strdup_printf ("repos/%s", update_repo_name);
+-#ifndef FLATPAK_DISABLE_GPG
+-  argv[2] = gpgargs[0];
+-  argv[3] = gpgargs[1];
+-  argv[4] = arg4;
+-#else
+-  argv[2] = arg4;
+-#endif
++  if (gpg_enabled)
++    {
++      g_auto(GStrv) gpgargs = NULL;
++      gpgargs = g_strsplit (gpg_args, " ", 0);
++      g_variant_builder_add_value (builder, g_variant_new_string (gpgargs[0]));
++      g_variant_builder_add_value (builder, g_variant_new_string (gpgargs[1]));
++    }
+ 
+-  run_test_subprocess (argv, RUN_TEST_SUBPROCESS_DEFAULT);
++  if (sign_enabled)
++    g_variant_builder_add_value (builder, g_variant_new_string (sign_args));
++
++  name = g_strdup_printf ("repos/%s", update_repo_name);
++  g_variant_builder_add_value (builder, g_variant_new_string (name));
++
++  args = g_variant_builder_end (builder);
++  argv = g_variant_get_strv (args, NULL);
++
++  run_test_subprocess ((char **) argv, RUN_TEST_SUBPROCESS_DEFAULT);
+ }
+ 
+ static void
+@@ -2499,19 +2537,13 @@ _add_remote (const char *remote_repo_name,
+              const char *remote_name_override,
+              gboolean    system)
+ {
+-#ifndef FLATPAK_DISABLE_GPG
+-  char *argv[] = { "flatpak", "remote-add", NULL, "--gpg-import=", "--collection-id=", "name", "url", NULL };
+-  g_autofree char *gpgimport = NULL;
+-#else
+-  char *argv[] = { "flatpak", "remote-add", NULL, "--collection-id=", "name", "url", NULL };
+-#endif
++  g_autoptr (GVariantBuilder) builder = NULL;
++  g_autoptr (GVariant) args = NULL;
+   g_autofree char *collection_id_arg = NULL;
+   g_autofree char *remote_name = NULL;
+   g_autofree char *repo_url = NULL;
++  g_autofree const char **argv = NULL;
+ 
+-#ifndef FLATPAK_DISABLE_GPG
+-  gpgimport = g_strdup_printf ("--gpg-import=%s/pubring.gpg", gpg_homedir);
+-#endif
+   repo_url = g_strdup_printf ("http://127.0.0.1:%s/%s", httpd_port, remote_repo_name);
+   collection_id_arg = g_strdup_printf ("--collection-id=%s", repo_collection_id);
+   if (remote_name_override != NULL)
+@@ -2519,19 +2551,35 @@ _add_remote (const char *remote_repo_name,
+   else
+     remote_name = g_strdup_printf ("%s-repo", remote_repo_name);
+ 
+-  argv[2] = system ? "--system" : "--user";
+-#ifndef FLATPAK_DISABLE_GPG
+-  argv[3] = gpgimport;
+-  argv[4] = collection_id_arg;
+-  argv[5] = remote_name;
+-  argv[6] = repo_url;
+-#else
+-  argv[3] = collection_id_arg;
+-  argv[4] = remote_name;
+-  argv[5] = repo_url;
+-#endif
++  builder = g_variant_builder_new (G_VARIANT_TYPE_STRING_ARRAY);
++  g_variant_builder_add_value (builder, g_variant_new_string ("flatpak"));
++  g_variant_builder_add_value (builder, g_variant_new_string ("remote-add"));
++  g_variant_builder_add_value (builder, g_variant_new_string (system ? "--system" : "--user"));
+ 
+-  run_test_subprocess (argv, RUN_TEST_SUBPROCESS_DEFAULT);
++  if (gpg_enabled)
++    {
++      g_autofree char *gpgimport = NULL;
++      gpgimport = g_strdup_printf ("--gpg-import=%s/pubring.gpg", gpg_homedir);
++      g_variant_builder_add_value (builder, g_variant_new_string (gpgimport));
++    }
++
++  if (sign_enabled)
++    {
++      g_autofree char *signverify = NULL;
++      signverify = g_strdup_printf ("--sign-verify=ed25519=inline:%s", sign_pubkey);
++      g_variant_builder_add_value (builder, g_variant_new_string (signverify));
++    }
++
++  if (gpg_enabled || sign_enabled)
++    g_variant_builder_add_value (builder, g_variant_new_string (collection_id_arg));
++
++  g_variant_builder_add_value (builder, g_variant_new_string (remote_name));
++  g_variant_builder_add_value (builder, g_variant_new_string (repo_url));
++
++  args = g_variant_builder_end (builder);
++  argv = g_variant_get_strv (args, NULL);
++
++  run_test_subprocess ((char **) argv, RUN_TEST_SUBPROCESS_DEFAULT);
+ }
+ 
+ static void
+@@ -2668,7 +2716,6 @@ setup_repo (void)
+   add_flatpakrepo ("test-runtime-only");
+ }
+ 
+-#ifndef FLATPAK_DISABLE_GPG
+ static void
+ copy_file (const char *src, const char *dest)
+ {
+@@ -2702,7 +2749,6 @@ copy_gpg (void)
+   g_free (src);
+   g_free (dest);
+ }
+-#endif
+ 
+ GTestDBus *test_bus = NULL;
+ 
+@@ -2760,14 +2806,22 @@ global_setup (void)
+   g_setenv ("FLATPAK_CONFIG_DIR", flatpak_configdir, TRUE);
+   g_test_message ("setting FLATPAK_CONFIG_DIR=%s", flatpak_configdir);
+ 
+-#ifndef FLATPAK_DISABLE_GPG
+-  gpg_homedir = g_strconcat (testdir, "/gpghome", NULL);
+-  g_mkdir_with_parents (gpg_homedir, S_IRWXU | S_IRWXG | S_IRWXO);
++  if (gpg_enabled)
++    {
++      gpg_homedir = g_strconcat (testdir, "/gpghome", NULL);
++      g_mkdir_with_parents (gpg_homedir, S_IRWXU | S_IRWXG | S_IRWXO);
+ 
+-  gpg_args = g_strdup_printf ("--gpg-homedir=%s --gpg-sign=%s", gpg_homedir, gpg_id);
+-  g_setenv ("GPGARGS", gpg_args, TRUE);
+-  g_test_message ("setting GPGARGS=%s", gpg_args);
+-#endif
++      gpg_args = g_strdup_printf ("--gpg-homedir=%s --gpg-sign=%s", gpg_homedir, gpg_id);
++      g_setenv ("GPGARGS", gpg_args, TRUE);
++      g_test_message ("setting GPGARGS=%s", gpg_args);
++    }
++
++  if (sign_enabled)
++    {
++      sign_args = g_strdup_printf ("--sign=%s", sign_key);
++      g_setenv ("SIGNARGS", sign_args, TRUE);
++      g_test_message ("setting SIGNARGS=%s", sign_args);
++    }
+ 
+   g_reload_user_special_dirs_cache ();
+ 
+@@ -2792,9 +2846,9 @@ global_setup (void)
+ 
+   g_test_dbus_up (test_bus);
+ 
+-#ifndef FLATPAK_DISABLE_GPG
+-  copy_gpg ();
+-#endif
++  if (gpg_enabled)
++    copy_gpg ();
++
+   setup_multiple_installations ();
+   setup_repo ();
+   make_bundle ();
+@@ -2803,10 +2857,6 @@ global_setup (void)
+ static void
+ global_teardown (void)
+ {
+-#ifndef FLATPAK_DISABLE_GPG
+-  char *argv[] = { "gpg-connect-agent", "--homedir", "<placeholder>", "killagent", "/bye", NULL };
+-#endif
+-
+   if (g_getenv ("SKIP_TEARDOWN"))
+     return;
+ 
+@@ -2815,10 +2865,12 @@ global_teardown (void)
+   if (httpd_pid != -1)
+     kill (httpd_pid, SIGKILL);
+ 
+-#ifndef FLATPAK_DISABLE_GPG
+-  argv[2] = gpg_homedir;
+-  run_test_subprocess (argv, RUN_TEST_SUBPROCESS_IGNORE_FAILURE);
+-#endif
++  if (gpg_enabled)
++    {
++      char *argv[] = { "gpg-connect-agent", "--homedir", "<placeholder>", "killagent", "/bye", NULL };
++      argv[2] = gpg_homedir;
++      run_test_subprocess (argv, RUN_TEST_SUBPROCESS_IGNORE_FAILURE);
++    }
+ 
+   glnx_shutil_rm_rf_at (-1, testdir, NULL, NULL);
+   g_free (testdir);
+@@ -4170,6 +4222,7 @@ test_bundle (void)
+   g_autoptr(GBytes) metadata = NULL;
+   g_autoptr(GBytes) appstream = NULL;
+   g_autoptr(GBytes) icon = NULL;
++  g_autoptr(GVariant) sign_data = NULL;
+ 
+   file = g_file_new_for_path ("/dev/null");
+ 
+@@ -4180,9 +4233,25 @@ test_bundle (void)
+ 
+   g_clear_object (&file);
+ 
++  if (sign_enabled)
++    {
++      g_auto (GVariantDict) dict;
++      g_autoptr (GVariantBuilder) builder = NULL;
++      g_autoptr (GVariant) keys = NULL;
++      g_autoptr (OstreeSign) sign = ostree_sign_get_by_name (OSTREE_SIGN_NAME_ED25519, NULL);
++
++      g_variant_dict_init (&dict, NULL);
++      builder = g_variant_builder_new (G_VARIANT_TYPE ("as"));
++      g_variant_builder_add_value (builder, g_variant_new_string (sign_pubkey));
++      keys = g_variant_ref_sink (g_variant_builder_end (builder));
++      g_variant_dict_insert_value (&dict, ostree_sign_metadata_key (sign), keys);
++
++      sign_data = g_variant_ref_sink (g_variant_dict_end (&dict));
++    }
++
+   path = g_build_filename (testdir, "bundles", "hello.flatpak", NULL);
+   file = g_file_new_for_path (path);
+-  ref = flatpak_bundle_ref_new (file, NULL, &error);
++  ref = flatpak_bundle_ref_new (file, sign_data, &error);
+   g_assert_no_error (error);
+   g_assert_nonnull (ref);
+ 
+@@ -4190,7 +4259,8 @@ test_bundle (void)
+   g_assert_cmpstr (flatpak_ref_get_arch (FLATPAK_REF (ref)), ==, flatpak_get_default_arch ());
+   g_assert_cmpstr (flatpak_ref_get_branch (FLATPAK_REF (ref)), ==, "master");
+   g_assert_cmpint (flatpak_ref_get_kind (FLATPAK_REF (ref)), ==, FLATPAK_REF_KIND_APP);
+-  g_assert_cmpstr (flatpak_ref_get_collection_id (FLATPAK_REF (ref)), ==, "com.example.Test");
++  if (gpg_enabled || sign_enabled)
++    g_assert_cmpstr (flatpak_ref_get_collection_id (FLATPAK_REF (ref)), ==, "com.example.Test");
+ 
+   file2 = flatpak_bundle_ref_get_file (ref);
+   g_assert_true (g_file_equal (file, file2));
+@@ -4232,6 +4302,7 @@ test_install_bundle (void)
+   g_autoptr(GFile) file = NULL;
+   g_autofree char *path = NULL;
+   g_autoptr(FlatpakInstalledRef) ref = NULL;
++  g_autoptr(GVariant) sign_data = NULL;
+ 
+   inst = flatpak_installation_new_user (NULL, &error);
+   g_assert_no_error (error);
+@@ -4242,8 +4313,24 @@ test_install_bundle (void)
+   path = g_build_filename (testdir, "bundles", "hello.flatpak", NULL);
+   file = g_file_new_for_path (path);
+ 
++  if (sign_enabled)
++    {
++      g_auto (GVariantDict) dict;
++      g_autoptr (GVariantBuilder) builder = NULL;
++      g_autoptr (GVariant) keys = NULL;
++      g_autoptr (OstreeSign) sign = ostree_sign_get_by_name (OSTREE_SIGN_NAME_ED25519, NULL);
++
++      g_variant_dict_init (&dict, NULL);
++      builder = g_variant_builder_new (G_VARIANT_TYPE ("as"));
++      g_variant_builder_add_value (builder, g_variant_new_string (sign_pubkey));
++      keys = g_variant_ref_sink (g_variant_builder_end (builder));
++      g_variant_dict_insert_value (&dict, ostree_sign_metadata_key (sign), keys);
++
++      sign_data = g_variant_ref_sink (g_variant_dict_end (&dict));
++    }
++
+   G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+-  ref = flatpak_installation_install_bundle (inst, file, NULL, NULL, NULL, NULL, &error);
++  ref = flatpak_installation_install_bundle (inst, file, sign_data, NULL, NULL, NULL, &error);
+   G_GNUC_END_IGNORE_DEPRECATIONS
+   g_assert_no_error (error);
+   g_assert_nonnull (ref);
+@@ -4708,6 +4795,12 @@ int
+ main (int argc, char *argv[])
+ {
+   int res;
++  g_autofree char *output = NULL;
++  char *ostree_argv[] = { "ostree", "--version", NULL };
++
++  g_spawn_sync (NULL, ostree_argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, &output, NULL, NULL, NULL);
++  if (output != NULL && output[0] != '\0' && strstr (output, "- sign-ed25519"))
++    sign_enabled = TRUE;
+ 
+   g_test_init (&argc, &argv, NULL);
+ 
+-- 
+2.30.0

@@ -1,0 +1,32 @@
+From 978df82454c8991307d785aad41c7ca397c98ce0 Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Wed, 10 Mar 2021 18:21:56 +0100
+Subject: [PATCH 26/26] tests: web-server: fix an issue with the web server
+ cache
+
+On a decently fast system, some files may be fetched, modified and then
+fetched again within the same second. In that case, the web server
+replies with a code 304 ("Not modified") to the 2nd query, causing some
+tests to fail.
+
+This commit forces the web server to ignore `If-Modified-Since` HTTP
+headers, effectively disabling caching in order to mitigate the problem.
+---
+ tests/web-server.py | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/tests/web-server.py b/tests/web-server.py
+index 4a2055f5..9dd82f17 100755
+--- a/tests/web-server.py
++++ b/tests/web-server.py
+@@ -37,6 +37,7 @@ class RequestHandler(http_server.SimpleHTTPRequestHandler):
+     def do_GET(self):
+         if self.handle_tokens():
+             return None
++        self.headers.__delitem__("If-Modified-Since")
+         return super().do_GET()
+ 
+ def run(dir):
+-- 
+2.30.0
+

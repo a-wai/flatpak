@@ -1,0 +1,94 @@
+From f11587b4fc15e174c4a2566f6637abd5a3e02e64 Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Wed, 10 Mar 2021 17:27:23 +0100
+Subject: [PATCH 14/26] common: dir: add functions for querying a remote's
+ sign-verify config
+
+In a similar way to what `flatpak_dir_get-gpg_verify()` and
+`flatpak_dir_get_verify_summary()` do, this commit introduces the
+`flatpak_dir_get_sign_verify()` and
+`flatpak_dir_get_sign_verify_summary()` functions.
+
+As the `sign-verify` option can be either a boolean or the signature
+algorithm name, we return the boolean value if it's of the right type,
+or TRUE if the key exists but isn't a boolean.
+---
+ common/flatpak-dir-private.h |  8 +++++++
+ common/flatpak-dir.c         | 42 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 50 insertions(+)
+
+diff --git a/common/flatpak-dir-private.h b/common/flatpak-dir-private.h
+index accfe061..21a47fca 100644
+--- a/common/flatpak-dir-private.h
++++ b/common/flatpak-dir-private.h
+@@ -558,6 +558,14 @@ OstreeRepo *          flatpak_dir_get_repo                                  (Fla
+ gboolean              flatpak_dir_ensure_path                               (FlatpakDir                    *self,
+                                                                              GCancellable                  *cancellable,
+                                                                              GError                       **error);
++gboolean              flatpak_dir_get_sign_verify_summary                   (OstreeRepo                    *repo,
++                                                                             const char                    *remote,
++                                                                             gboolean                      *sign_verify_summary,
++                                                                             GError                       **error);
++gboolean              flatpak_dir_get_sign_verify                           (OstreeRepo                    *repo,
++                                                                             const char                    *remote,
++                                                                             gboolean                      *sign_verify,
++                                                                             GError                       **error);
+ gboolean              flatpak_dir_use_child_repo                            (FlatpakDir                    *self);
+ gboolean              flatpak_dir_ensure_system_child_repo                  (FlatpakDir                    *self,
+                                                                              GError                       **error);
+diff --git a/common/flatpak-dir.c b/common/flatpak-dir.c
+index a5e461f2..aa722404 100644
+--- a/common/flatpak-dir.c
++++ b/common/flatpak-dir.c
+@@ -3603,6 +3603,48 @@ flatpak_dir_ensure_path (FlatpakDir   *self,
+     }
+ }
+ 
++gboolean
++flatpak_dir_get_sign_verify_summary (OstreeRepo *repo,
++                                     const char *remote,
++                                     gboolean   *sign_verify_summary,
++                                     GError    **error)
++{
++  return ostree_repo_get_remote_boolean_option (repo, remote,
++                                                "sign-verify-summary", FALSE,
++                                                sign_verify_summary, error);
++}
++
++gboolean
++flatpak_dir_get_sign_verify (OstreeRepo *repo,
++                             const char *remote,
++                             gboolean   *sign_verify,
++                             GError    **error)
++{
++  g_autoptr(GError) temp_error = NULL;
++  gboolean ret = FALSE;
++
++  ret = ostree_repo_get_remote_boolean_option (repo, remote,
++                                               "sign-verify", FALSE,
++                                               sign_verify, &temp_error);
++  if (temp_error != NULL)
++    {
++      if (g_error_matches (temp_error, G_KEY_FILE_ERROR, G_KEY_FILE_ERROR_INVALID_VALUE))
++        {
++          /*
++           * INVALID_VALUE means the key exist but not as a boolean, meaning
++           * signature verification is enabled
++           */
++          ret = *sign_verify = TRUE;
++        }
++      else
++        {
++          g_propagate_error (error, g_steal_pointer (&temp_error));
++        }
++    }
++
++  return ret;
++}
++
+ gboolean
+ flatpak_dir_migrate_config (FlatpakDir   *self,
+                             gboolean     *changed,
+-- 
+2.30.0
+

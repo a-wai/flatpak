@@ -1,0 +1,300 @@
+From 333b0433ac3466f2cbf24fcacbedf9bc664c4377 Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Wed, 10 Mar 2021 17:16:29 +0100
+Subject: [PATCH 13/26] app: builtins-remote-*: add command-line options for
+ signature keys
+
+This commit adds the `--sign-verify` and `--no-sign-verify` command-line
+options to the `remote-add` and `remote-modify` commands. The former
+specifies the public ED25519 keys to be used for verifying the remote,
+while the latter disables all signature verification (including GPG
+signatures, following ostree's implementation).
+
+`remote-list` is also extended to show whether signature verification is
+disabled.
+---
+ app/flatpak-builtins-remote-add.c    | 65 ++++++++++++++++++++++---
+ app/flatpak-builtins-remote-list.c   |  6 +++
+ app/flatpak-builtins-remote-modify.c | 73 +++++++++++++++++++++++++++-
+ 3 files changed, 137 insertions(+), 7 deletions(-)
+
+diff --git a/app/flatpak-builtins-remote-add.c b/app/flatpak-builtins-remote-add.c
+index 4ae021d9..c5bcc4c3 100644
+--- a/app/flatpak-builtins-remote-add.c
++++ b/app/flatpak-builtins-remote-add.c
+@@ -37,6 +37,7 @@
+ static gboolean opt_no_gpg_verify;
+ static gboolean opt_do_gpg_verify;
+ #endif
++static gboolean opt_no_sign_verify = FALSE;
+ static gboolean opt_do_enumerate;
+ static gboolean opt_no_enumerate;
+ static gboolean opt_do_deps;
+@@ -58,6 +59,7 @@ static gboolean opt_from;
+ #ifndef FLATPAK_DISABLE_GPG
+ static char **opt_gpg_import;
+ #endif
++static char **opt_sign_keys = NULL;
+ static char *opt_authenticator_name = NULL;
+ static char **opt_authenticator_options = NULL;
+ static gboolean opt_authenticator_install = -1;
+@@ -73,6 +75,7 @@ static GOptionEntry common_options[] = {
+ #ifndef FLATPAK_DISABLE_GPG
+   { "no-gpg-verify", 0, 0, G_OPTION_ARG_NONE, &opt_no_gpg_verify, N_("Disable GPG verification"), NULL },
+ #endif
++  { "no-sign-verify", 0, 0, G_OPTION_ARG_NONE, &opt_no_sign_verify, N_("Disable signature verification"), NULL },
+   { "no-enumerate", 0, 0, G_OPTION_ARG_NONE, &opt_no_enumerate, N_("Mark the remote as don't enumerate"), NULL },
+   { "no-use-for-deps", 0, 0, G_OPTION_ARG_NONE, &opt_no_deps, N_("Mark the remote as don't use for deps"), NULL },
+   { "prio", 0, 0, G_OPTION_ARG_INT, &opt_prio, N_("Set priority (default 1, higher is more prioritized)"), N_("PRIORITY") },
+@@ -87,6 +90,7 @@ static GOptionEntry common_options[] = {
+ #ifndef FLATPAK_DISABLE_GPG
+   { "gpg-import", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_gpg_import, N_("Import GPG key from FILE (- for stdin)"), N_("FILE") },
+ #endif
++  { "sign-verify", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_sign_keys, N_("Verify signatures using KEYTYPE=inline:PUBKEY or KEYTYPE=file:/path/to/key"), N_("KEYTYPE=[inline|file]:PUBKEY") },
+   { "filter", 0, 0, G_OPTION_ARG_FILENAME, &opt_filter, N_("Set path to local filter FILE"), N_("FILE") },
+   { "disable", 0, 0, G_OPTION_ARG_NONE, &opt_disable, N_("Disable the remote"), NULL },
+   { "authenticator-name", 0, 0, G_OPTION_ARG_STRING, &opt_authenticator_name, N_("Name of authenticator"), N_("NAME") },
+@@ -107,7 +111,7 @@ get_config_from_opts (GKeyFile *config,
+   g_autofree char *group = g_strdup_printf ("remote \"%s\"", remote_name);
+ 
+ #ifndef FLATPAK_DISABLE_GPG
+-  if (opt_no_gpg_verify)
++  if (opt_no_gpg_verify || opt_no_sign_verify)
+     {
+       g_key_file_set_boolean (config, group, "gpg-verify", FALSE);
+       g_key_file_set_boolean (config, group, "gpg-verify-summary", FALSE);
+@@ -123,6 +127,54 @@ get_config_from_opts (GKeyFile *config,
+   g_key_file_set_boolean (config, group, "gpg-verify-summary", FALSE);
+ #endif
+ 
++  if (opt_no_sign_verify)
++    {
++      g_key_file_set_boolean (config, group, "sign-verify", FALSE);
++      g_key_file_set_boolean (config, group, "sign-verify-summary", FALSE);
++    }
++  else
++    {
++      g_autofree gchar *verify = g_key_file_get_string (config, group, "sign-verify", NULL);
++      g_autoptr(GString) sign_verify = NULL;
++
++      /*
++       * `sign-verify` can be either a boolean, or a string representing the
++       * signature type. In the latter case, this means it's enabled, so we
++       * have to read the full string and check it doesn't translate to a
++       * boolean false.
++       */
++      if (verify && !g_str_equal (verify, "false") && !g_str_equal (verify, "0"))
++        sign_verify = g_string_new (verify);
++
++      for (char **iter = opt_sign_keys; iter && *iter; iter++)
++        {
++          g_autofree char *signname = flatpak_verify_add_config_options (config, group, *iter, error);
++          if (!signname)
++            return FALSE;
++
++          if (!sign_verify)
++            {
++              sign_verify = g_string_new (signname);
++            }
++          else if (g_strstr_len (sign_verify->str, sign_verify->len, signname) == NULL)
++            {
++              g_string_append_c (sign_verify, ',');
++              g_string_append (sign_verify, signname);
++            }
++        }
++
++      if (sign_verify && sign_verify->len > 0)
++        {
++          g_key_file_set_string (config, group, "sign-verify", sign_verify->str);
++          g_key_file_set_boolean (config, group, "sign-verify-summary", TRUE);
++        }
++      else
++        {
++          g_key_file_set_boolean (config, group, "sign-verify", FALSE);
++          g_key_file_set_boolean (config, group, "sign-verify-summary", FALSE);
++        }
++    }
++
+   if (opt_url)
+     {
+       if (g_str_has_prefix (opt_url, "metalink="))
+@@ -334,11 +386,12 @@ flatpak_builtin_remote_add (int argc, char **argv,
+       !ostree_validate_collection_id (opt_collection_id, &local_error))
+     return flatpak_fail (error, _("‘%s’ is not a valid collection ID: %s"), opt_collection_id, local_error->message);
+ 
+-#ifndef FLATPAK_DISABLE_GPG
+   if (opt_collection_id != NULL &&
+-      (opt_no_gpg_verify || opt_gpg_import == NULL || opt_gpg_import[0] == NULL))
+-    return flatpak_fail (error, _("GPG verification is required if collections are enabled"));
++#ifndef FLATPAK_DISABLE_GPG
++      (opt_no_gpg_verify || opt_gpg_import == NULL || opt_gpg_import[0] == NULL) &&
+ #endif
++      (opt_no_sign_verify || opt_sign_keys == NULL || opt_sign_keys[0] == NULL))
++    return flatpak_fail (error, _("signature verification is required if collections are enabled"));
+ 
+   remote_name = argv[1];
+   location = argv[2];
+@@ -367,7 +420,7 @@ flatpak_builtin_remote_add (int argc, char **argv,
+ #ifndef FLATPAK_DISABLE_GPG
+       /* Default to gpg verify, except for OCI registries */
+       is_oci = opt_url && g_str_has_prefix (opt_url, "oci+");
+-      if (!opt_no_gpg_verify && !is_oci)
++      if (!opt_no_gpg_verify && !opt_no_sign_verify && !is_oci)
+         opt_do_gpg_verify = TRUE;
+ #endif
+     }
+@@ -433,7 +486,7 @@ flatpak_builtin_remote_add (int argc, char **argv,
+      remote should already be usable. */
+   if (!flatpak_dir_update_remote_configuration (dir, remote_name, NULL, NULL, cancellable, &local_error))
+     {
+-      if (local_error->domain == G_RESOLVER_ERROR || local_error->domain == G_IO_ERROR)
++      if (local_error->domain == G_RESOLVER_ERROR || (local_error->domain == G_IO_ERROR && strstr(local_error->message, "ed25519") == NULL))
+         {
+           g_printerr (_("Warning: Could not update extra metadata for '%s': %s\n"), remote_name, local_error->message);
+         }
+diff --git a/app/flatpak-builtins-remote-list.c b/app/flatpak-builtins-remote-list.c
+index d0c13e34..4cbcd0f5 100644
+--- a/app/flatpak-builtins-remote-list.c
++++ b/app/flatpak-builtins-remote-list.c
+@@ -178,6 +178,7 @@ list_remotes (GPtrArray *dirs, Column *columns, GCancellable *cancellable, GErro
+               else if (strcmp (columns[k].name, "options") == 0)
+                 {
+                   gboolean gpg_verify = TRUE;
++                  gboolean sign_verify = TRUE;
+                   g_autofree char *filter = flatpak_dir_get_remote_filter (dir, remote_name);
+ 
+                   flatpak_table_printer_add_column (printer, ""); /* Options */
+@@ -202,6 +203,11 @@ list_remotes (GPtrArray *dirs, Column *columns, GCancellable *cancellable, GErro
+                   if (!gpg_verify)
+                     flatpak_table_printer_append_with_comma (printer, "no-gpg-verify");
+ 
++                  flatpak_dir_get_sign_verify (flatpak_dir_get_repo (dir),
++                                               remote_name, &sign_verify, NULL);
++                  if (!sign_verify)
++                    flatpak_table_printer_append_with_comma (printer, "no-sign-verify");
++
+                   if (filter != NULL && *filter != 0)
+                     flatpak_table_printer_append_with_comma (printer, "filtered");
+                 }
+diff --git a/app/flatpak-builtins-remote-modify.c b/app/flatpak-builtins-remote-modify.c
+index 6e0e9c8e..a56ad0ec 100644
+--- a/app/flatpak-builtins-remote-modify.c
++++ b/app/flatpak-builtins-remote-modify.c
+@@ -37,6 +37,7 @@
+ static gboolean opt_no_gpg_verify;
+ static gboolean opt_do_gpg_verify;
+ #endif
++static gboolean opt_no_sign_verify;
+ static gboolean opt_do_enumerate;
+ static gboolean opt_no_enumerate;
+ static gboolean opt_do_deps;
+@@ -64,6 +65,7 @@ static gboolean opt_authenticator_install = -1;
+ #ifndef FLATPAK_DISABLE_GPG
+ static char **opt_gpg_import;
+ #endif
++static char **opt_sign_keys = NULL;
+ 
+ static GOptionEntry modify_options[] = {
+ #ifndef FLATPAK_DISABLE_GPG
+@@ -82,6 +84,7 @@ static GOptionEntry common_options[] = {
+ #ifndef FLATPAK_DISABLE_GPG
+   { "no-gpg-verify", 0, 0, G_OPTION_ARG_NONE, &opt_no_gpg_verify, N_("Disable GPG verification"), NULL },
+ #endif
++  { "no-sign-verify", 0, 0, G_OPTION_ARG_NONE, &opt_no_sign_verify, N_("Disable signature verification"), NULL },
+   { "no-enumerate", 0, 0, G_OPTION_ARG_NONE, &opt_no_enumerate, N_("Mark the remote as don't enumerate"), NULL },
+   { "no-use-for-deps", 0, 0, G_OPTION_ARG_NONE, &opt_no_deps, N_("Mark the remote as don't use for deps"), NULL },
+   { "prio", 0, 0, G_OPTION_ARG_INT, &opt_prio, N_("Set priority (default 1, higher is more prioritized)"), N_("PRIORITY") },
+@@ -95,6 +98,7 @@ static GOptionEntry common_options[] = {
+ #ifndef FLATPAK_DISABLE_GPG
+   { "gpg-import", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_gpg_import, N_("Import GPG key from FILE (- for stdin)"), N_("FILE") },
+ #endif
++  { "sign-verify", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_sign_keys, N_("Verify signatures using KEYTYPE=inline:PUBKEY or KEYTYPE=file:/path/to/key"), N_("KEYTYPE=[inline|file]:PUBKEY") },
+   { "no-filter", 0, 0, G_OPTION_ARG_NONE, &opt_no_filter, N_("Disable local filter"), NULL },
+   { "filter", 0, 0, G_OPTION_ARG_FILENAME, &opt_filter, N_("Set path to local filter FILE"), N_("FILE") },
+   { "disable", 0, 0, G_OPTION_ARG_NONE, &opt_disable, N_("Disable the remote"), NULL },
+@@ -121,7 +125,7 @@ get_config_from_opts (FlatpakDir *dir, const char *remote_name, gboolean *change
+     config = ostree_repo_copy_config (repo);
+ 
+ #ifndef FLATPAK_DISABLE_GPG
+-  if (opt_no_gpg_verify)
++  if (opt_no_gpg_verify || opt_no_sign_verify)
+     {
+       g_key_file_set_boolean (config, group, "gpg-verify", FALSE);
+       g_key_file_set_boolean (config, group, "gpg-verify-summary", FALSE);
+@@ -139,6 +143,73 @@ get_config_from_opts (FlatpakDir *dir, const char *remote_name, gboolean *change
+   g_key_file_set_boolean (config, group, "gpg-verify-summary", FALSE);
+ #endif
+ 
++  if (opt_no_sign_verify)
++    {
++      g_autoptr(GPtrArray) verifiers = ostree_sign_get_all ();
++
++      /* Remove all existing signature keys if any */
++      for (guint i = 0; i < verifiers->len; i++)
++        {
++          g_autofree char *optkey = NULL;
++          g_autofree char *optfile = NULL;
++          OstreeSign *sign = verifiers->pdata[i];
++
++          optkey = g_strdup_printf ("verification-%s-key", ostree_sign_get_name (sign));
++          optfile = g_strdup_printf ("verification-%s-file", ostree_sign_get_name (sign));
++
++          g_key_file_remove_key (config, group, optkey, NULL);
++          g_key_file_remove_key (config, group, optfile, NULL);
++        }
++
++      g_key_file_set_boolean (config, group, "sign-verify", FALSE);
++      g_key_file_set_boolean (config, group, "sign-verify-summary", FALSE);
++      *changed = TRUE;
++    }
++  else
++    {
++      g_autofree gchar *verify = g_key_file_get_string (config, group, "sign-verify", NULL);
++      g_autoptr(GString) sign_verify = NULL;
++
++      /*
++       * `sign-verify` can be either a boolean, or a string representing the
++       * signature type. In the latter case, this means it's enabled, so we
++       * have to read the full string and check it doesn't translate to a
++       * boolean false.
++       */
++      if (verify && !g_str_equal (verify, "false") && !g_str_equal (verify, "0"))
++        sign_verify = g_string_new (verify);
++
++      for (char **iter = opt_sign_keys; iter && *iter; iter++)
++        {
++          g_autofree char *signname = flatpak_verify_add_config_options (config, group, *iter, NULL);
++          if (!signname)
++            return FALSE;
++
++          if (!sign_verify)
++            {
++              sign_verify = g_string_new (signname);
++            }
++          else if (g_strstr_len (sign_verify->str, sign_verify->len, signname) == NULL)
++            {
++              g_string_append_c (sign_verify, ',');
++              g_string_append (sign_verify, signname);
++            }
++
++          *changed = TRUE;
++        }
++
++      if (sign_verify && sign_verify->len > 0)
++        {
++          g_key_file_set_string (config, group, "sign-verify", sign_verify->str);
++          g_key_file_set_boolean (config, group, "sign-verify-summary", TRUE);
++        }
++      else
++        {
++          g_key_file_set_boolean (config, group, "sign-verify", FALSE);
++          g_key_file_set_boolean (config, group, "sign-verify-summary", FALSE);
++        }
++    }
++
+   if (opt_url)
+     {
+       if (g_str_has_prefix (opt_url, "metalink="))
+-- 
+2.30.0
+

@@ -1,0 +1,166 @@
+From 449dec3590d317e1195d60639a7564c830428c5a Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Wed, 10 Mar 2021 18:18:55 +0100
+Subject: [PATCH 25/26] tests: add more tests for ED25519 signatures
+
+This commit adds a few ED25519-specific tests in order to make sure all
+basic use cases (no signature, verification using a single key, or using
+keys from a file) are covered.
+---
+ tests/test-repo.sh  | 68 +++++++++++++++++++++++++++++++++++++++++++--
+ tests/testlibrary.c | 10 +++++++
+ 2 files changed, 76 insertions(+), 2 deletions(-)
+
+diff --git a/tests/test-repo.sh b/tests/test-repo.sh
+index c1483a16..c0ec15c6 100644
+--- a/tests/test-repo.sh
++++ b/tests/test-repo.sh
+@@ -25,9 +25,17 @@ skip_without_bwrap
+ skip_revokefs_without_fuse
+ 
+ if [ x${FLATPAK_USE_GPG} == xyes ]; then
+-    echo "1..41"
++    if [ x${FL_SIGN_ENABLED} == xyes ]; then
++        echo "1..44"
++    else
++        echo "1..41"
++    fi
+ else
+-    echo "1..37"
++    if [ x${FL_SIGN_ENABLED} == xyes ]; then
++        echo "1..40"
++    else
++        echo "1..37"
++    fi
+ fi
+ 
+ #Regular repo
+@@ -93,6 +101,34 @@ if [ x${FLATPAK_USE_GPG} == xyes ]; then
+     fi
+ fi
+ 
++if [ x${FL_SIGN_ENABLED} == xyes ]; then
++    #non-ED25519 signed repo
++    SIGNARGS="" SIGNPUBKEY="" setup_repo test-no-ed25519 org.test.Collection.NoEd25519
++
++    #alternative ED25519 key repo
++    SIGNARGS="--sign=${FL_SIGN_PRIVKEY2}" SIGNPUBKEY="${FL_SIGN_PUBKEY2}" setup_repo test-alt-ed25519 org.test.Collection.AltEd25519
++
++    #remote with wrong ED25519 key
++    port=$(cat httpd-port)
++    if flatpak remote-add ${U} ${OPT_GPG_IMPORT} ${OPT_SIGN_VERIFY} test-wrong-ed25519-repo "http://127.0.0.1:${port}/test-alt-ed25519"; then
++        assert_not_reached "Should fail metadata-update due to wrong ed25519 key"
++    fi
++
++    #remote with non-existent ED25519 key file
++    port=$(cat httpd-port)
++    if flatpak remote-add ${U} ${OPT_GPG_IMPORT} --sign-verify=ed25519=file:/file/does/not/exist test-wrong-ed25519-file-repo "http://127.0.0.1:${port}/test"; then
++        assert_not_reached "Should fail metadata-update due to non-existent ed25519 key file"
++    fi
++
++    #remote with wrong ED25519 key file
++    port=$(cat httpd-port)
++    if flatpak remote-add ${U} ${OPT_GPG_IMPORT} --sign-verify=ed25519=file:${FL_SIGN_KEYFILE2} test-wrong-ed25519-file-repo "http://127.0.0.1:${port}/test"; then
++        assert_not_reached "Should fail metadata-update due to wrong ed25519 key file"
++    fi
++
++    flatpak remote-add ${U} ${OPT_GPG_IMPORT} --sign-verify=ed25519=file:${FL_SIGN_KEYFILE} test-ed25519-file-repo "http://127.0.0.1:${port}/test"
++fi
++
+ # Remove new appstream branch so we can test deploying the old one
+ rm -rf repos/test/refs/heads/appstream2
+ ${FLATPAK} build-update-repo ${BUILD_UPDATE_REPO_FLAGS-} --no-update-appstream ${FL_GPGARGS} ${FL_SIGNARGS} repos/test
+@@ -145,6 +181,20 @@ else
+     install_repo local-test-no-gpg
+ fi
+ 
++if [ x${FL_SIGN_ENABLED} == xyes ]; then
++    ${FLATPAK} ${U} uninstall -y org.test.Platform org.test.Hello
++    install_repo test-ed25519-file
++    ok "with ed25519 key read from file"
++
++    ${FLATPAK} ${U} uninstall -y org.test.Platform org.test.Hello
++    install_repo test-no-ed25519
++    ok "without ed25519 key"
++
++    ${FLATPAK} ${U} uninstall -y org.test.Platform org.test.Hello
++    install_repo test-alt-ed25519
++    ok "with alternative ed25519 key"
++fi
++
+ if ${FLATPAK} ${U} install -y test-repo org.test.Platform 2> install-error-log; then
+     assert_not_reached "Should not be able to install again from different remote without reinstall"
+ fi
+@@ -172,6 +222,13 @@ if [ x${FLATPAK_USE_GPG} == xyes ]; then
+     ${FLATPAK} ${U} remote-modify --disable test-wrong-gpg-repo
+     ${FLATPAK} ${U} remote-modify --disable test-gpg2-repo
+ fi
++if [ x${FL_SIGN_ENABLED} == xyes ]; then
++    ${FLATPAK} ${U} remote-modify --disable test-ed25519-file-repo
++    ${FLATPAK} ${U} remote-modify --disable test-no-ed25519-repo
++    ${FLATPAK} ${U} remote-modify --disable test-alt-ed25519-repo
++    ${FLATPAK} ${U} remote-modify --disable test-wrong-ed25519-repo
++    ${FLATPAK} ${U} remote-modify --disable test-wrong-ed25519-file-repo
++fi
+ ${FLATPAK} ${U} remote-modify --disable local-test-no-gpg-repo
+ if [ x${USE_COLLECTIONS_IN_CLIENT-} != xyes ] ; then
+     ${FLATPAK} ${U} remote-modify --disable test-no-gpg-repo
+@@ -189,6 +246,13 @@ if [ x${FLATPAK_USE_GPG} == xyes ]; then
+     ${FLATPAK} ${U} remote-modify --enable test-wrong-gpg-repo
+     ${FLATPAK} ${U} remote-modify --enable test-gpg2-repo
+ fi
++if [ x${FL_SIGN_ENABLED} == xyes ]; then
++    ${FLATPAK} ${U} remote-modify --enable test-ed25519-file-repo
++    ${FLATPAK} ${U} remote-modify --enable test-no-ed25519-repo
++    ${FLATPAK} ${U} remote-modify --enable test-alt-ed25519-repo
++    ${FLATPAK} ${U} remote-modify --enable test-wrong-ed25519-repo
++    ${FLATPAK} ${U} remote-modify --enable test-wrong-ed25519-file-repo
++fi
+ ${FLATPAK} ${U} remote-modify --enable local-test-no-gpg-repo
+ if [ x${USE_COLLECTIONS_IN_CLIENT-} != xyes ] ; then
+     ${FLATPAK} ${U} remote-modify --enable test-no-gpg-repo
+diff --git a/tests/testlibrary.c b/tests/testlibrary.c
+index 501dea46..5e5000e3 100644
+--- a/tests/testlibrary.c
++++ b/tests/testlibrary.c
+@@ -592,6 +592,7 @@ test_remote_by_name (void)
+   g_assert_false (flatpak_remote_get_noenumerate (remote));
+   g_assert_false (flatpak_remote_get_disabled (remote));
+   g_assert (flatpak_remote_get_gpg_verify (remote) == gpg_enabled);
++  g_assert (flatpak_remote_get_sign_verify (remote) == sign_enabled);
+   g_assert_cmpint (flatpak_remote_get_prio (remote), ==, 1);
+ 
+   if (gpg_enabled || sign_enabled)
+@@ -623,6 +624,7 @@ test_remote (void)
+   g_autoptr(GFile) repo_file = NULL;
+   g_autoptr(OstreeRepo) repo = NULL;
+   gboolean gpg_verify_summary;
++  gboolean sign_verify_summary;
+   gboolean res;
+ 
+   inst = flatpak_installation_new_user (NULL, &error);
+@@ -648,6 +650,10 @@ test_remote (void)
+   g_assert_no_error (error);
+   g_assert_true (res);
+   g_assert (gpg_verify_summary == gpg_enabled);
++  res = ostree_repo_get_remote_boolean_option (repo, repo_name, "sign-verify-summary", FALSE, &sign_verify_summary, &error);
++  g_assert_no_error (error);
++  g_assert_true (res);
++  g_assert (sign_verify_summary == sign_enabled);
+ 
+   /* Temporarily unset the collection ID */
+   flatpak_remote_set_collection_id (remote, NULL);
+@@ -663,6 +669,10 @@ test_remote (void)
+   g_assert_no_error (error);
+   g_assert_true (res);
+   g_assert (gpg_verify_summary == gpg_enabled);
++  res = ostree_repo_get_remote_boolean_option (repo, repo_name, "sign-verify-summary", FALSE, &sign_verify_summary, &error);
++  g_assert_no_error (error);
++  g_assert_true (res);
++  g_assert (sign_verify_summary == sign_enabled);
+ 
+   if (gpg_enabled || sign_enabled)
+     {
+-- 
+2.30.0
+

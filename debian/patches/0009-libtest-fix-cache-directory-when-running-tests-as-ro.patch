@@ -1,0 +1,33 @@
+From 4d4198dc176b2f5aac1eb5b8a9d75b8672c21189 Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Mon, 1 Mar 2021 17:28:01 +0100
+Subject: [PATCH 09/26] libtest: fix cache directory when running tests as root
+
+When running the tests as root, test #2 of test-summaries@system fails
+because the cache directory isn't the expected one. Adding a condition
+on the current user ensures this test will pass when run both as root
+and non-root user.
+---
+ tests/libtest.sh | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/tests/libtest.sh b/tests/libtest.sh
+index 412993e8..0b0fda8e 100644
+--- a/tests/libtest.sh
++++ b/tests/libtest.sh
+@@ -117,7 +117,11 @@ if [ x${USE_SYSTEMDIR-} == xyes ] ; then
+     export FL_DIR=${SYSTEMDIR}
+     export U=
+     export INVERT_U=--user
+-    export FL_CACHE_DIR=${XDG_CACHE_HOME}/flatpak/system-cache
++    if [ x${USER} == xroot ] ; then
++        export FL_CACHE_DIR=${FLATPAK_SYSTEM_DIR}/repo/tmp/cache
++    else
++        export FL_CACHE_DIR=${XDG_CACHE_HOME}/flatpak/system-cache
++    fi
+ else
+     export FL_DIR=${USERDIR}
+     export U="--user"
+-- 
+2.30.0
+

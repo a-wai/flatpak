@@ -1,0 +1,36 @@
+From d893fd53fb7df9dd644e9d341bccafaedb48f0f8 Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Mon, 1 Mar 2021 17:29:25 +0100
+Subject: [PATCH 06/26] system-helper: allow updating unsigned remotes with GPG
+ support disabled
+
+By default, updating a remote through the system helper requires a
+signed summary. However, this isn't relevant when GPG support is
+disabled, as we can't verify the signatures. It is therefore reasonable
+to allow for unsigned summaries in this case.
+---
+ system-helper/flatpak-system-helper.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/system-helper/flatpak-system-helper.c b/system-helper/flatpak-system-helper.c
+index b202c941..3698f83a 100644
+--- a/system-helper/flatpak-system-helper.c
++++ b/system-helper/flatpak-system-helper.c
+@@ -1239,12 +1239,14 @@ handle_update_remote (FlatpakSystemHelper   *object,
+       return G_DBUS_METHOD_INVOCATION_HANDLED;
+     }
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   if (summary_sig_bytes == NULL)
+     {
+       g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
+                                              "UpdateRemote requires a summary signature");
+       return G_DBUS_METHOD_INVOCATION_HANDLED;
+     }
++#endif
+ 
+   if (!flatpak_dir_update_remote_configuration_for_state (system, state, FALSE, NULL, NULL, &error))
+     {
+-- 
+2.30.0
+

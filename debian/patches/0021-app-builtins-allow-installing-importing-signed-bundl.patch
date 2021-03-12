@@ -1,0 +1,139 @@
+From 1fc61c6207abb104e305f4dd17af2fa37f9a9269 Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Wed, 10 Mar 2021 18:00:23 +0100
+Subject: [PATCH 21/26] app: builtins: allow installing/importing signed
+ bundles
+
+This commit adds the `--sign-verify` command-line options to the
+`install` and `build-import-bundle` commands, so that ED25519-signed
+bundles can be properly processed.
+---
+ app/flatpak-builtins-build-import-bundle.c | 19 ++++++++++++-------
+ app/flatpak-builtins-install.c             |  8 +++++++-
+ 2 files changed, 19 insertions(+), 8 deletions(-)
+
+diff --git a/app/flatpak-builtins-build-import-bundle.c b/app/flatpak-builtins-build-import-bundle.c
+index f70a32b0..cba4e322 100644
+--- a/app/flatpak-builtins-build-import-bundle.c
++++ b/app/flatpak-builtins-build-import-bundle.c
+@@ -39,6 +39,7 @@ static char **opt_gpg_key_ids = NULL;
+ static char *opt_gpg_homedir = NULL;
+ static char **opt_sign_keys = NULL;
+ static char *opt_sign_name = NULL;
++static char **opt_sign_verify = NULL;
+ static gboolean opt_update_appstream;
+ static gboolean opt_no_update_summary;
+ static gboolean opt_no_summary_index = FALSE;
+@@ -52,6 +53,7 @@ static GOptionEntry options[] = {
+ #endif
+   { "sign", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_sign_keys, "Key ID to sign the commit with", "KEY-ID"},
+   { "sign-type", 0, 0, G_OPTION_ARG_STRING, &opt_sign_name, "Signature type to use (defaults to 'ed25519')", "NAME"},
++  { "sign-verify", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_sign_verify, N_("Verify signatures using KEYTYPE=inline:PUBKEY or KEYTYPE=file:/path/to/key"), N_("KEYTYPE=[inline|file]:PUBKEY") },
+   { "update-appstream", 0, 0, G_OPTION_ARG_NONE, &opt_update_appstream, N_("Update the appstream branch"), NULL },
+   { "no-update-summary", 0, 0, G_OPTION_ARG_NONE, &opt_no_update_summary, N_("Don't update the summary"), NULL },
+   { "no-summary-index", 0, 0, G_OPTION_ARG_NONE, &opt_no_summary_index, N_("Don't generate a summary index"), NULL },
+@@ -140,7 +142,7 @@ import_oci (OstreeRepo *repo, GFile *file,
+ }
+ 
+ static char *
+-import_bundle (OstreeRepo *repo, GFile *file,
++import_bundle (OstreeRepo *repo, GFile *file, GVariant *verify_keys,
+                GCancellable *cancellable, GError **error)
+ {
+   g_autoptr(GVariant) metadata = NULL;
+@@ -151,8 +153,8 @@ import_bundle (OstreeRepo *repo, GFile *file,
+   /* Don’t need to check the collection ID of the bundle here;
+    * flatpak_pull_from_bundle() does that. */
+   metadata = flatpak_bundle_load (file, &to_checksum,
+-                                  &bundle_ref,
+-                                  NULL, NULL, NULL, NULL,
++                                  &bundle_ref, verify_keys,
++                                  NULL, NULL, NULL,
+                                   NULL, NULL, NULL, error);
+   if (metadata == NULL)
+     return NULL;
+@@ -165,9 +167,8 @@ import_bundle (OstreeRepo *repo, GFile *file,
+   g_print (_("Importing %s (%s)\n"), ref, to_checksum);
+   if (!flatpak_pull_from_bundle (repo, file,
+                                  NULL, ref, FALSE,
+-                                 FALSE, NULL,
+-                                 cancellable,
+-                                 error))
++                                 FALSE, verify_keys,
++                                 cancellable, error))
+     return NULL;
+ 
+   return g_strdup (to_checksum);
+@@ -180,6 +181,7 @@ flatpak_builtin_build_import (int argc, char **argv, GCancellable *cancellable,
+   g_autoptr(GFile) file = NULL;
+   g_autoptr(GFile) repofile = NULL;
+   g_autoptr(OstreeRepo) repo = NULL;
++  g_autoptr(GVariant) verify_keys = NULL;
+   const char *location;
+   const char *filename;
+   g_autofree char *commit = NULL;
+@@ -212,10 +214,13 @@ flatpak_builtin_build_import (int argc, char **argv, GCancellable *cancellable,
+   if (!ostree_repo_open (repo, cancellable, error))
+     return FALSE;
+ 
++  if (opt_sign_verify)
++    verify_keys = flatpak_verify_parse_keys (opt_sign_verify);
++
+   if (opt_oci)
+     commit = import_oci (repo, file, cancellable, error);
+   else
+-    commit = import_bundle (repo, file, cancellable, error);
++    commit = import_bundle (repo, file, verify_keys, cancellable, error);
+   if (commit == NULL)
+     return FALSE;
+ 
+diff --git a/app/flatpak-builtins-install.c b/app/flatpak-builtins-install.c
+index 81c1adfc..d4ab5c2f 100644
+--- a/app/flatpak-builtins-install.c
++++ b/app/flatpak-builtins-install.c
+@@ -44,6 +44,7 @@ static char *opt_arch;
+ #ifndef FLATPAK_DISABLE_GPG
+ static char **opt_gpg_file;
+ #endif
++static char **opt_sign_keys = NULL;
+ static char **opt_subpaths;
+ static char **opt_sideload_repos;
+ static gboolean opt_no_pull;
+@@ -76,6 +77,7 @@ static GOptionEntry options[] = {
+ #ifndef FLATPAK_DISABLE_GPG
+   { "gpg-file", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_gpg_file, N_("Check bundle signatures with GPG key from FILE (- for stdin)"), N_("FILE") },
+ #endif
++  { "sign-verify", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_sign_keys, N_("Verify signatures using KEYTYPE=inline:PUBKEY or KEYTYPE=file:/path/to/key"), N_("KEYTYPE=[inline|file]:PUBKEY") },
+   { "subpath", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_subpaths, N_("Only install this subpath"), N_("PATH") },
+   { "assumeyes", 'y', 0, G_OPTION_ARG_NONE, &opt_yes, N_("Automatically answer yes for all questions"), NULL },
+   { "reinstall", 0, 0, G_OPTION_ARG_NONE, &opt_reinstall, N_("Uninstall first if already installed"), NULL },
+@@ -140,6 +142,7 @@ install_bundle (FlatpakDir *dir,
+   g_autoptr(GFile) file = NULL;
+   const char *filename;
+   g_autoptr(GBytes) gpg_data = NULL;
++  g_autoptr(GVariant) sign_data = NULL;
+   g_autoptr(FlatpakTransaction) transaction = NULL;
+ 
+   if (argc < 2)
+@@ -165,6 +168,9 @@ install_bundle (FlatpakDir *dir,
+     }
+ #endif
+ 
++  if (opt_sign_keys)
++      sign_data = flatpak_verify_parse_keys (opt_sign_keys);
++
+   if (opt_noninteractive)
+     transaction = flatpak_quiet_transaction_new (dir, error);
+   else
+@@ -183,7 +189,7 @@ install_bundle (FlatpakDir *dir,
+   for (int i = 0; opt_sideload_repos != NULL && opt_sideload_repos[i] != NULL; i++)
+     flatpak_transaction_add_sideload_repo (transaction, opt_sideload_repos[i]);
+ 
+-  if (!flatpak_transaction_add_install_bundle (transaction, file, gpg_data, NULL, error))
++  if (!flatpak_transaction_add_install_bundle (transaction, file, gpg_data, sign_data, error))
+     return FALSE;
+ 
+   if (!flatpak_transaction_run (transaction, cancellable, error))
+-- 
+2.30.0
+

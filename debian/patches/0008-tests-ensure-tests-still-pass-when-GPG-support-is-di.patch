@@ -1,0 +1,820 @@
+From 5d2185df23d3efd4bf3f72cab40b2ae4b837d780 Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Mon, 1 Mar 2021 17:27:04 +0100
+Subject: [PATCH 08/26] tests: ensure tests still pass when GPG support is
+ disabled
+
+This commit disables all tests requiring GPG support when the latter is
+disabled, and makes the necessary adjustments for all other tests to
+keep passing.
+---
+ tests/test-basic.sh                       |  21 +--
+ tests/test-bundle.sh                      |  31 +++--
+ tests/test-extensions.sh                  |   7 +-
+ tests/test-repo.sh                        | 156 +++++++++++++---------
+ tests/test-sideload.sh                    |  26 ++--
+ tests/test-unused.sh                      |   7 +-
+ tests/test-update-remote-configuration.sh |  55 +++++---
+ tests/testlibrary.c                       |  73 +++++++++-
+ 8 files changed, 266 insertions(+), 110 deletions(-)
+
+diff --git a/tests/test-basic.sh b/tests/test-basic.sh
+index 24943934..91841f41 100755
+--- a/tests/test-basic.sh
++++ b/tests/test-basic.sh
+@@ -64,15 +64,18 @@ assert_file_has_content drivers "^host$";
+ 
+ ok "gl drivers"
+ 
+-for cmd in install update uninstall list info config repair create-usb \
+-           search run override make-current enter ps document-export \
+-           document-unexport document-info documents permission-remove \
+-           permissions permission-show permission-reset remotes remote-add \
+-           remote-modify remote-delete remote-ls remote-info build-init \
+-           build build-finish build-export build-bundle build-import-bundle \
+-           build-sign build-update-repo build-commit-from repo kill history \
+-           mask;
+-do
++CMD_LIST="install update uninstall list info config repair create-usb
++          search run override make-current enter ps document-export
++          document-unexport document-info documents permission-remove
++          permissions permission-show permission-reset remotes remote-add
++          remote-modify remote-delete remote-ls remote-info build-init
++          build build-finish build-export build-bundle build-import-bundle
++          build-update-repo build-commit-from repo kill history mask"
++if [ "$FLATPAK_USE_GPG" = "yes" ]; then
++  CMD_LIST="${CMD_LIST} build-sign"
++fi
++
++for cmd in ${CMD_LIST}; do
+   ${FLATPAK} $cmd --help | head -2 > help_out
+ 
+   assert_file_has_content help_out "^Usage:$"
+diff --git a/tests/test-bundle.sh b/tests/test-bundle.sh
+index 487b0735..6be5c305 100755
+--- a/tests/test-bundle.sh
++++ b/tests/test-bundle.sh
+@@ -25,21 +25,26 @@ skip_without_bwrap
+ 
+ echo "1..8"
+ 
++OPT_GPG_KEYS=
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    OPT_GPG_KEYS="--gpg-keys=${FL_GPG_HOMEDIR}/pubring.gpg"
++fi
++
+ mkdir bundles
+ 
+ setup_repo
+ 
+-${FLATPAK} build-bundle repos/test --repo-url=file://`pwd`/repos/test --gpg-keys=${FL_GPG_HOMEDIR}/pubring.gpg bundles/hello.flatpak org.test.Hello
++${FLATPAK} build-bundle repos/test --repo-url=file://`pwd`/repos/test ${OPT_GPG_KEYS} bundles/hello.flatpak org.test.Hello
+ assert_has_file bundles/hello.flatpak
+ 
+-${FLATPAK} build-bundle repos/test --runtime --repo-url=file://`pwd`/repos/test --gpg-keys=${FL_GPG_HOMEDIR}/pubring.gpg bundles/platform.flatpak org.test.Platform
++${FLATPAK} build-bundle repos/test --runtime --repo-url=file://`pwd`/repos/test ${OPT_GPG_KEYS} bundles/platform.flatpak org.test.Platform
+ assert_has_file bundles/platform.flatpak
+ 
+ ok "create bundles server-side"
+ 
+ rm bundles/hello.flatpak
+ ${FLATPAK} ${U} install -y test-repo org.test.Hello
+-${FLATPAK} build-bundle $FL_DIR/repo --repo-url=file://`pwd`/repos/test --gpg-keys=${FL_GPG_HOMEDIR}/pubring.gpg bundles/hello.flatpak org.test.Hello
++${FLATPAK} build-bundle $FL_DIR/repo --repo-url=file://`pwd`/repos/test ${OPT_GPG_KEYS} bundles/hello.flatpak org.test.Hello
+ assert_has_file bundles/hello.flatpak
+ 
+ ok "create bundles client-side"
+@@ -53,7 +58,10 @@ assert_has_file $FL_DIR/repo/refs/remotes/test-repo/runtime/org.test.Platform/$A
+ assert_has_file $FL_DIR/repo/refs/remotes/hello-origin/app/org.test.Hello/$ARCH/master
+ APP_COMMIT=`cat $FL_DIR/repo/refs/remotes/hello-origin/app/org.test.Hello/$ARCH/master`
+ assert_has_file $FL_DIR/repo/objects/$(echo $APP_COMMIT | cut -b 1-2)/$(echo $APP_COMMIT | cut -b 3-).commit
+-assert_has_file $FL_DIR/repo/objects/$(echo $APP_COMMIT | cut -b 1-2)/$(echo $APP_COMMIT | cut -b 3-).commitmeta
++# Unsigned commits don't have an associated .commitmeta file
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    assert_has_file $FL_DIR/repo/objects/$(echo $APP_COMMIT | cut -b 1-2)/$(echo $APP_COMMIT | cut -b 3-).commitmeta
++fi
+ 
+ assert_has_dir $FL_DIR/app/org.test.Hello
+ assert_has_symlink $FL_DIR/app/org.test.Hello/current
+@@ -88,7 +96,9 @@ $FLATPAK info ${U} org.test.Hello | grep $ID > /dev/null
+ 
+ $FLATPAK remote-list ${U} -d | grep hello-origin > /dev/null
+ $FLATPAK remote-list ${U} -d | grep hello-origin | grep no-enumerate > /dev/null
+-assert_has_file $FL_DIR/repo/hello-origin.trustedkeys.gpg
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    assert_has_file $FL_DIR/repo/hello-origin.trustedkeys.gpg
++fi
+ 
+ ok "install app bundle"
+ 
+@@ -101,7 +111,10 @@ ${FLATPAK} install -y ${U} --bundle bundles/platform.flatpak
+ assert_has_file $FL_DIR/repo/refs/remotes/platform-origin/runtime/org.test.Platform/$ARCH/master
+ RUNTIME_COMMIT=`cat $FL_DIR/repo/refs/remotes/platform-origin/runtime/org.test.Platform/$ARCH/master`
+ assert_has_file $FL_DIR/repo/objects/$(echo $RUNTIME_COMMIT | cut -b 1-2)/$(echo $RUNTIME_COMMIT | cut -b 3-).commit
+-assert_has_file $FL_DIR/repo/objects/$(echo $RUNTIME_COMMIT | cut -b 1-2)/$(echo $RUNTIME_COMMIT | cut -b 3-).commitmeta
++# Unsigned commits don't have an associated .commitmeta file
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    assert_has_file $FL_DIR/repo/objects/$(echo $RUNTIME_COMMIT | cut -b 1-2)/$(echo $RUNTIME_COMMIT | cut -b 3-).commitmeta
++fi
+ 
+ assert_has_dir $FL_DIR/runtime/org.test.Platform
+ assert_has_dir $FL_DIR/runtime/org.test.Platform/$ARCH/master
+@@ -121,7 +134,9 @@ $FLATPAK info ${U} org.test.Platform | grep $ID > /dev/null
+ 
+ $FLATPAK remote-list ${U} -d | grep platform-origin > /dev/null
+ $FLATPAK remote-list ${U} -d | grep platform-origin | grep no-enumerate > /dev/null
+-assert_has_file $FL_DIR/repo/platform-origin.trustedkeys.gpg
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    assert_has_file $FL_DIR/repo/platform-origin.trustedkeys.gpg
++fi
+ 
+ ok "install runtime bundle"
+ 
+@@ -157,7 +172,7 @@ ok "update"
+ 
+ make_updated_app test org.test.Collection.test master UPDATED2
+ 
+-${FLATPAK} build-bundle repos/test --repo-url=file://`pwd`/repos/test --gpg-keys=${FL_GPG_HOMEDIR}/pubring.gpg bundles/hello2.flatpak org.test.Hello
++${FLATPAK} build-bundle repos/test --repo-url=file://`pwd`/repos/test ${OPT_GPG_KEYS} bundles/hello2.flatpak org.test.Hello
+ assert_has_file bundles/hello2.flatpak
+ 
+ ${FLATPAK} install ${U} -y --bundle bundles/hello2.flatpak
+diff --git a/tests/test-extensions.sh b/tests/test-extensions.sh
+index e6a85ce7..27df65a6 100755
+--- a/tests/test-extensions.sh
++++ b/tests/test-extensions.sh
+@@ -25,6 +25,11 @@ skip_without_bwrap
+ 
+ echo "1..2"
+ 
++OPT_NO_VERIFY=
++if [ "$FLATPAK_USE_GPG" = "yes" ]; then
++    OPT_NO_VERIFY="--no-gpg-verify"
++fi
++
+ make_extension () {
+     local ID=$1
+     local VERSION=$2
+@@ -105,7 +110,7 @@ add_extensions platform
+ ${FLATPAK} build-export --no-update-summary --disable-sandbox repos/test platform --files=files master
+ update_repo
+ 
+-${FLATPAK} remote-add --user --no-gpg-verify test-repo repos/test
++${FLATPAK} remote-add --user ${OPT_NO_VERIFY} test-repo repos/test
+ ${FLATPAK} --user install -y test-repo org.test.Platform master
+ ${FLATPAK} --user install -y test-repo org.test.Hello master
+ 
+diff --git a/tests/test-repo.sh b/tests/test-repo.sh
+index 58867420..56d6cea7 100644
+--- a/tests/test-repo.sh
++++ b/tests/test-repo.sh
+@@ -24,11 +24,27 @@ set -euo pipefail
+ skip_without_bwrap
+ skip_revokefs_without_fuse
+ 
+-echo "1..41"
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    echo "1..41"
++else
++    echo "1..37"
++fi
+ 
+ #Regular repo
+ setup_repo
+ 
++ALT_GPG_PUBRING=
++OPT_NO_VERIFY=
++OPT_GPG_IMPORT=
++OPT_GPG_IMPORT2=
++
++if [ "$FLATPAK_USE_GPG" = "yes" ]; then
++    ALT_GPG_PUBRING="${FL_GPG_HOMEDIR2}/pubring.gpg"
++    OPT_NO_VERIFY="--no-gpg-verify"
++    OPT_GPG_IMPORT="--gpg-import=${FL_GPG_HOMEDIR}/pubring.gpg"
++    OPT_GPG_IMPORT2="--gpg-import=${ALT_GPG_PUBRING}"
++fi
++
+ # Ensure we have appdata
+ if ! ostree show --repo=repos/test appstream/${ARCH} > /dev/null; then
+     assert_not_reached "No appstream branch"
+@@ -51,28 +67,30 @@ elif [ x${USE_COLLECTIONS_IN_SERVER-} == xyes ] ; then
+     # Set a collection ID and GPG on the server, but not in the client configuration
+     setup_repo_no_add test-no-gpg org.test.Collection.NoGpg
+     port=$(cat httpd-port)
+-    flatpak remote-add ${U} --no-gpg-verify test-no-gpg-repo "http://127.0.0.1:${port}/test-no-gpg"
++    flatpak remote-add ${U} ${OPT_NO_VERIFY} test-no-gpg-repo "http://127.0.0.1:${port}/test-no-gpg"
+ else
+     GPGPUBKEY="" GPGARGS="" setup_repo test-no-gpg
+ fi
+ 
+-flatpak remote-add ${U} --no-gpg-verify local-test-no-gpg-repo `pwd`/repos/test-no-gpg
++flatpak remote-add ${U} ${OPT_NO_VERIFY} local-test-no-gpg-repo `pwd`/repos/test-no-gpg
+ 
+-#alternative gpg key repo
+-GPGPUBKEY="${FL_GPG_HOMEDIR2}/pubring.gpg" GPGARGS="${FL_GPGARGS2}" setup_repo test-gpg2 org.test.Collection.Gpg2
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    #alternative gpg key repo
++    GPGPUBKEY="${ALT_GPG_PUBRING}" GPGARGS="${FL_GPGARGS2}" setup_repo test-gpg2 org.test.Collection.Gpg2
+ 
+-#remote with missing GPG key
+-# Don’t use --collection-id= here, or the collections code will grab the appropriate
+-# GPG key from one of the previously-configured remotes with the same collection ID.
+-port=$(cat httpd-port)
+-if flatpak remote-add ${U} test-missing-gpg-repo "http://127.0.0.1:${port}/test"; then
+-    assert_not_reached "Should fail metadata-update due to missing gpg key"
+-fi
++    #remote with missing GPG key
++    # Don’t use --collection-id= here, or the collections code will grab the appropriate
++    # GPG key from one of the previously-configured remotes with the same collection ID.
++    port=$(cat httpd-port)
++    if flatpak remote-add ${U} test-missing-gpg-repo "http://127.0.0.1:${port}/test"; then
++        assert_not_reached "Should fail metadata-update due to missing gpg key"
++    fi
+ 
+-#remote with wrong GPG key
+-port=$(cat httpd-port)
+-if flatpak remote-add ${U} --gpg-import=${FL_GPG_HOMEDIR2}/pubring.gpg test-wrong-gpg-repo "http://127.0.0.1:${port}/test"; then
+-    assert_not_reached "Should fail metadata-update due to wrong gpg key"
++    #remote with wrong GPG key
++    port=$(cat httpd-port)
++    if flatpak remote-add ${U} ${OPT_GPG_IMPORT2} test-wrong-gpg-repo "http://127.0.0.1:${port}/test"; then
++        assert_not_reached "Should fail metadata-update due to wrong gpg key"
++    fi
+ fi
+ 
+ # Remove new appstream branch so we can test deploying the old one
+@@ -120,8 +138,12 @@ ${FLATPAK} ${U} update --appstream local-test-no-gpg-repo
+ 
+ ok "local without gpg key"
+ 
+-install_repo test-gpg2
+-ok "with alternative gpg key"
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    install_repo test-gpg2
++    ok "with alternative gpg key"
++else
++    install_repo local-test-no-gpg
++fi
+ 
+ if ${FLATPAK} ${U} install -y test-repo org.test.Platform 2> install-error-log; then
+     assert_not_reached "Should not be able to install again from different remote without reinstall"
+@@ -145,9 +167,11 @@ ok "typo correction works for install"
+ ${FLATPAK} ${U} uninstall -y org.test.Hello
+ 
+ # Temporarily disable some remotes so that org.test.Hello only exists in one
+-${FLATPAK} ${U} remote-modify --disable test-missing-gpg-repo
+-${FLATPAK} ${U} remote-modify --disable test-wrong-gpg-repo
+-${FLATPAK} ${U} remote-modify --disable test-gpg2-repo
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    ${FLATPAK} ${U} remote-modify --disable test-missing-gpg-repo
++    ${FLATPAK} ${U} remote-modify --disable test-wrong-gpg-repo
++    ${FLATPAK} ${U} remote-modify --disable test-gpg2-repo
++fi
+ ${FLATPAK} ${U} remote-modify --disable local-test-no-gpg-repo
+ if [ x${USE_COLLECTIONS_IN_CLIENT-} != xyes ] ; then
+     ${FLATPAK} ${U} remote-modify --disable test-no-gpg-repo
+@@ -160,9 +184,11 @@ assert_file_has_content install-log "org\.test\.Hello"
+ ${FLATPAK} ${U} list -d > list-log
+ assert_file_has_content list-log "org\.test\.Hello"
+ 
+-${FLATPAK} ${U} remote-modify --enable test-missing-gpg-repo
+-${FLATPAK} ${U} remote-modify --enable test-wrong-gpg-repo
+-${FLATPAK} ${U} remote-modify --enable test-gpg2-repo
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    ${FLATPAK} ${U} remote-modify --enable test-missing-gpg-repo
++    ${FLATPAK} ${U} remote-modify --enable test-wrong-gpg-repo
++    ${FLATPAK} ${U} remote-modify --enable test-gpg2-repo
++fi
+ ${FLATPAK} ${U} remote-modify --enable local-test-no-gpg-repo
+ if [ x${USE_COLLECTIONS_IN_CLIENT-} != xyes ] ; then
+     ${FLATPAK} ${U} remote-modify --enable test-no-gpg-repo
+@@ -216,31 +242,33 @@ fi
+ 
+ ok "install flatpakref normalizes remote URL trailing slash"
+ 
+-${FLATPAK} ${U} uninstall -y org.test.Platform org.test.Hello
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    ${FLATPAK} ${U} uninstall -y org.test.Platform org.test.Hello
+ 
+-if ${FLATPAK} ${U} install -y test-missing-gpg-repo org.test.Platform 2> install-error-log; then
+-    assert_not_reached "Should not be able to install with missing gpg key"
+-fi
+-assert_log_has_gpg_signature_error install-error-log
++    if ${FLATPAK} ${U} install -y test-missing-gpg-repo org.test.Platform 2> install-error-log; then
++        assert_not_reached "Should not be able to install with missing gpg key"
++    fi
++    assert_log_has_gpg_signature_error install-error-log
+ 
+-if ${FLATPAK} ${U} install test-missing-gpg-repo org.test.Hello 2> install-error-log; then
+-    assert_not_reached "Should not be able to install with missing gpg key"
+-fi
+-assert_log_has_gpg_signature_error install-error-log
++    if ${FLATPAK} ${U} install test-missing-gpg-repo org.test.Hello 2> install-error-log; then
++        assert_not_reached "Should not be able to install with missing gpg key"
++    fi
++    assert_log_has_gpg_signature_error install-error-log
+ 
+-ok "fail with missing gpg key"
++    ok "fail with missing gpg key"
+ 
+-if ${FLATPAK} ${U} install test-wrong-gpg-repo org.test.Platform 2> install-error-log; then
+-    assert_not_reached "Should not be able to install with wrong gpg key"
+-fi
+-assert_log_has_gpg_signature_error install-error-log
++    if ${FLATPAK} ${U} install test-wrong-gpg-repo org.test.Platform 2> install-error-log; then
++        assert_not_reached "Should not be able to install with wrong gpg key"
++    fi
++    assert_log_has_gpg_signature_error install-error-log
+ 
+-if ${FLATPAK} ${U} install test-wrong-gpg-repo org.test.Hello 2> install-error-log; then
+-    assert_not_reached "Should not be able to install with wrong gpg key"
+-fi
+-assert_log_has_gpg_signature_error install-error-log
++    if ${FLATPAK} ${U} install test-wrong-gpg-repo org.test.Hello 2> install-error-log; then
++        assert_not_reached "Should not be able to install with wrong gpg key"
++    fi
++    assert_log_has_gpg_signature_error install-error-log
+ 
+-ok "fail with wrong gpg key"
++    ok "fail with wrong gpg key"
++fi
+ 
+ make_required_version_app () {
+     APP_ID=${1}
+@@ -391,7 +419,7 @@ ostree init --repo=repos/test-rebase --mode=archive-z2 ${rebase_collection_args}
+ ${FLATPAK} build-commit-from --no-update-summary --src-repo=repos/test ${FL_GPGARGS} repos/test-rebase app/org.test.Hello/$ARCH/master runtime/org.test.Hello.Locale/$ARCH/master
+ update_repo test-rebase ${REBASE_COLLECTION_ID}
+ 
+-flatpak remote-add ${U} --gpg-import=${FL_GPG_HOMEDIR}/pubring.gpg test-rebase "http://127.0.0.1:${port}/test-rebase"
++flatpak remote-add ${U} ${OPT_GPG_IMPORT} test-rebase "http://127.0.0.1:${port}/test-rebase"
+ 
+ ${FLATPAK} ${U} install -y test-rebase org.test.Hello
+ 
+@@ -493,32 +521,34 @@ ${FLATPAK} ${U} uninstall -y --all
+ 
+ ok "eol runtime uninstalled during update run"
+ 
+-${FLATPAK} ${U} install -y test-repo org.test.Platform
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    ${FLATPAK} ${U} install -y test-repo org.test.Platform
+ 
+-port=$(cat httpd-port)
+-UPDATE_REPO_ARGS="--redirect-url=http://127.0.0.1:${port}/test-gpg3 --gpg-import=${FL_GPG_HOMEDIR2}/pubring.gpg" update_repo
+-SRC_RUNTIME_REPO="test" GPGPUBKEY="${FL_GPG_HOMEDIR2}/pubring.gpg" GPGARGS="${FL_GPGARGS2}" setup_repo_no_add test-gpg3 org.test.Collection.test master
++    port=$(cat httpd-port)
++    UPDATE_REPO_ARGS="--redirect-url=http://127.0.0.1:${port}/test-gpg3 ${OPT_GPG_IMPORT2}" update_repo
++    SRC_RUNTIME_REPO="test" GPGPUBKEY="${FL_GPG_HOMEDIR2}/pubring.gpg" GPGARGS="${FL_GPGARGS2}" setup_repo_no_add test-gpg3 org.test.Collection.test master
+ 
+-${FLATPAK} ${U} update -y org.test.Platform
+-# Ensure we have the new uri
+-${FLATPAK} ${U} remotes -d | grep ^test-repo > repo-info
+-assert_file_has_content repo-info "/test-gpg3"
++    ${FLATPAK} ${U} update -y org.test.Platform
++    # Ensure we have the new uri
++    ${FLATPAK} ${U} remotes -d | grep ^test-repo > repo-info
++    assert_file_has_content repo-info "/test-gpg3"
+ 
+-# Make sure we also get new installs from the new repo
+-GPGARGS="${FL_GPGARGS2}" make_updated_app test-gpg3 org.test.Collection.test master
+-update_repo test-gpg3 org.test.Collection.test
++    # Make sure we also get new installs from the new repo
++    GPGARGS="${FL_GPGARGS2}" make_updated_app test-gpg3 org.test.Collection.test master
++    update_repo test-gpg3 org.test.Collection.test
+ 
+-${FLATPAK} ${U} install -y test-repo org.test.Hello
+-assert_file_has_content $FL_DIR/app/org.test.Hello/$ARCH/master/active/files/bin/hello.sh UPDATED
++    ${FLATPAK} ${U} install -y test-repo org.test.Hello
++    assert_file_has_content $FL_DIR/app/org.test.Hello/$ARCH/master/active/files/bin/hello.sh UPDATED
+ 
+-# Switch back to the old url to unconfuse other tests
+-UPDATE_REPO_ARGS="--redirect-url=" update_repo
+-${FLATPAK} ${U} remote-modify --url="http://127.0.0.1:${port}/test" test-repo
++    # Switch back to the old url to unconfuse other tests
++    UPDATE_REPO_ARGS="--redirect-url=" update_repo
++    ${FLATPAK} ${U} remote-modify --url="http://127.0.0.1:${port}/test" test-repo
+ 
+-# Also remove app so we can install the older one from the previous repo
+-${FLATPAK} ${U} uninstall -y org.test.Hello
++    # Also remove app so we can install the older one from the previous repo
++    ${FLATPAK} ${U} uninstall -y org.test.Hello
+ 
+-ok "redirect url and gpg key"
++    ok "redirect url and gpg key"
++fi
+ 
+ ${FLATPAK} ${U} install -y -v test-repo org.test.Hello
+ 
+diff --git a/tests/test-sideload.sh b/tests/test-sideload.sh
+index 68767630..d4861de2 100644
+--- a/tests/test-sideload.sh
++++ b/tests/test-sideload.sh
+@@ -27,7 +27,11 @@ USE_COLLECTIONS_IN_CLIENT=yes
+ skip_without_bwrap
+ skip_revokefs_without_fuse
+ 
+-echo "1..9"
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    echo "1..9"
++else
++    echo "1..8"
++fi
+ 
+ #Regular repo
+ setup_repo
+@@ -196,17 +200,19 @@ ${FLATPAK} ${U} remote-modify --url="http://127.0.0.1:${port}/test" test-repo
+ 
+ ok "update offline to new version"
+ 
+-assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
+-assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
+ 
+-ostree --repo=$FL_DIR/repo config set --group='remote "test-repo"' gpg-verify-summary false
++    ostree --repo=$FL_DIR/repo config set --group='remote "test-repo"' gpg-verify-summary false
+ 
+-assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
+-assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
+ 
+-${FLATPAK} ${U} update -y
++    ${FLATPAK} ${U} update -y
+ 
+-assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
+-assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
+ 
+-ok "migrate to gpg-verify-summary"
++    ok "migrate to gpg-verify-summary"
++fi
+diff --git a/tests/test-unused.sh b/tests/test-unused.sh
+index 5bd359a8..d0107d68 100755
+--- a/tests/test-unused.sh
++++ b/tests/test-unused.sh
+@@ -31,8 +31,13 @@ echo "1..2"
+ 
+ setup_empty_repo &> /dev/null > /dev/null
+ 
++OPT_GPG_IMPORT=
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    OPT_GPG_IMPORT="--gpg-import=${FL_GPG_HOMEDIR}/pubring.gpg"
++fi
++
+ # Manually add the user remote too
+-$FLATPAK remote-add --user --gpg-import=${FL_GPG_HOMEDIR}/pubring.gpg test-repo "http://127.0.0.1:${port}/test"
++$FLATPAK remote-add --user ${OPT_GPG_IMPORT} test-repo "http://127.0.0.1:${port}/test"
+ 
+ 
+ # This tests the detection of unused refs. Used refs are any that have
+diff --git a/tests/test-update-remote-configuration.sh b/tests/test-update-remote-configuration.sh
+index 5684de8a..08b9fcb4 100755
+--- a/tests/test-update-remote-configuration.sh
++++ b/tests/test-update-remote-configuration.sh
+@@ -43,11 +43,19 @@ update_repo
+ 
+ ${FLATPAK} ${U} install -y test-repo org.test.App master
+ 
+-assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
+-assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
+-assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
+-assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
+-assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
++else
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
++fi
+ 
+ # Change its configuration to include a collection ID, update the repository,
+ # but don’t mark the collection ID as to be deployed yet. Ensure it doesn’t
+@@ -58,12 +66,19 @@ UPDATE_REPO_ARGS="--collection-id=org.test.Collection" update_repo
+ 
+ ${FLATPAK} ${U} update -y org.test.App master
+ 
+-assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
+-assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
+-assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
+-assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
+-assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
+-assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
++else
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^collection-id='
++fi
+ 
+ ok "1 update repo config without deploying collection ID"
+ 
+@@ -74,11 +89,19 @@ assert_file_has_content repos/test/config '^deploy-collection-id=true$'
+ 
+ ${FLATPAK} ${U} update -y org.test.App master
+ 
+-assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
+-assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
+-assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
+-assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
+-assert_file_has_content ${FL_DIR}/repo/config '^collection-id=org\.test\.Collection$'
++if [ x${FLATPAK_USE_GPG} == xyes ]; then
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
++    assert_file_has_content ${FL_DIR}/repo/config '^collection-id=org\.test\.Collection$'
++else
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify-summary=true$'
++    assert_file_has_content ${FL_DIR}/repo/config '^gpg-verify=false$'
++    assert_not_file_has_content ${FL_DIR}/repo/config '^gpg-verify=true$'
++    assert_file_has_content ${FL_DIR}/repo/config '^collection-id=org\.test\.Collection$'
++fi
+ 
+ # Try the deploy for sideload only method
+ sed -i "s/deploy-collection-id=true//" repos/test/config
+diff --git a/tests/testlibrary.c b/tests/testlibrary.c
+index 292b1a94..6c1965ec 100644
+--- a/tests/testlibrary.c
++++ b/tests/testlibrary.c
+@@ -18,13 +18,17 @@ static char *flatpak_systemdir;
+ static char *flatpak_systemcachedir;
+ static char *flatpak_configdir;
+ static char *flatpak_installationsdir;
++#ifndef FLATPAK_DISABLE_GPG
+ static char *gpg_homedir;
+ static char *gpg_args;
++#endif
+ static char *repo_collection_id;
+ static char *httpd_port; /* TODO: leaked? */
+ int httpd_pid = -1;
+ 
++#ifndef FLATPAK_DISABLE_GPG
+ static const char *gpg_id = "7B0961FD";
++#endif
+ const char *repo_name = "test-repo";
+ 
+ typedef enum {
+@@ -582,7 +586,11 @@ test_remote_by_name (void)
+   g_assert_cmpint (flatpak_remote_get_remote_type (remote), ==, FLATPAK_REMOTE_TYPE_STATIC);
+   g_assert_false (flatpak_remote_get_noenumerate (remote));
+   g_assert_false (flatpak_remote_get_disabled (remote));
++#ifndef FLATPAK_DISABLE_GPG
+   g_assert_true (flatpak_remote_get_gpg_verify (remote));
++#else
++  g_assert_false (flatpak_remote_get_gpg_verify (remote));
++#endif
+   g_assert_cmpint (flatpak_remote_get_prio (remote), ==, 1);
+ 
+   g_assert_cmpstr (flatpak_remote_get_collection_id (remote), ==, repo_collection_id);
+@@ -636,7 +644,11 @@ test_remote (void)
+   res = ostree_repo_get_remote_boolean_option (repo, repo_name, "gpg-verify-summary", FALSE, &gpg_verify_summary, &error);
+   g_assert_no_error (error);
+   g_assert_true (res);
++#ifndef FLATPAK_DISABLE_GPG
+   g_assert_true (gpg_verify_summary);
++#else
++  g_assert_false (gpg_verify_summary);
++#endif
+ 
+   /* Temporarily unset the collection ID */
+   flatpak_remote_set_collection_id (remote, NULL);
+@@ -651,7 +663,11 @@ test_remote (void)
+   res = ostree_repo_get_remote_boolean_option (repo, repo_name, "gpg-verify-summary", FALSE, &gpg_verify_summary, &error);
+   g_assert_no_error (error);
+   g_assert_true (res);
++#ifndef FLATPAK_DISABLE_GPG
+   g_assert_true (gpg_verify_summary);
++#else
++  g_assert_false (gpg_verify_summary);
++#endif
+ 
+   flatpak_remote_set_collection_id (remote, repo_collection_id);
+   g_assert_cmpstr (flatpak_remote_get_collection_id (remote), ==, repo_collection_id);
+@@ -680,6 +696,7 @@ test_remote (void)
+   flatpak_remote_set_default_branch (remote, "master");
+   g_assert_cmpstr (flatpak_remote_get_default_branch (remote), ==, "master");
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   /* It should be an error to disable GPG while a collection ID is set. */
+   g_assert_true (flatpak_remote_get_gpg_verify (remote));
+   flatpak_remote_set_gpg_verify (remote, FALSE);
+@@ -693,6 +710,7 @@ test_remote (void)
+   flatpak_remote_set_collection_id (remote, NULL);
+   g_assert_cmpstr (flatpak_remote_get_collection_id (remote), ==, NULL);
+   g_assert_false (flatpak_remote_get_gpg_verify (remote));
++#endif
+ 
+   res = flatpak_installation_modify_remote (inst, remote, NULL, &error);
+   g_assert_no_error (error);
+@@ -717,8 +735,10 @@ test_remote (void)
+   flatpak_remote_set_nodeps (remote, FALSE);
+   flatpak_remote_set_disabled (remote, FALSE);
+   flatpak_remote_set_default_branch (remote, NULL);
++#ifndef FLATPAK_DISABLE_GPG
+   flatpak_remote_set_gpg_verify (remote, TRUE);
+   flatpak_remote_set_collection_id (remote, repo_collection_id);
++#endif
+ 
+   res = flatpak_installation_modify_remote (inst, remote, NULL, &error);
+   g_assert_no_error (error);
+@@ -955,8 +975,13 @@ test_list_refs_in_remotes (void)
+ 
+   repo_url = g_strdup_printf ("file://%s", repo_dir);
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   const char *argv[] = { "flatpak", "remote-add", "--user", "--no-gpg-verify",
+                          repo_name2, repo_url, NULL };
++#else
++  const char *argv[] = { "flatpak", "remote-add", "--user",
++                         repo_name2, repo_url, NULL };
++#endif
+ 
+   /* Add the repo we created above, which holds one collection ID per ref */
+   run_test_subprocess ((char **) argv, RUN_TEST_SUBPROCESS_DEFAULT);
+@@ -2366,6 +2391,7 @@ rename_test_app (const char *update_repo_name)
+   g_autofree char *arg6 = NULL;
+   g_autofree char *app_ref = NULL;
+   g_autofree char *app_locale_ref = NULL;
++#ifndef FLATPAK_DISABLE_GPG
+   char *argv[] = { "flatpak", "build-commit-from", "--gpg-homedir=", "--gpg-sign=",
+                    "--end-of-life-rebase=org.test.Hello=org.test.Hello2",
+                    "--src-repo=",
+@@ -2373,18 +2399,31 @@ rename_test_app (const char *update_repo_name)
+   g_auto(GStrv) gpgargs = NULL;
+ 
+   gpgargs = g_strsplit (gpg_args, " ", 0);
++#else
++  char *argv[] = { "flatpak", "build-commit-from",
++                   "--end-of-life-rebase=org.test.Hello=org.test.Hello2",
++                   "--src-repo=",
++                   NULL, NULL, NULL, NULL };
++#endif
+   arg5 = g_strdup_printf ("--src-repo=repos/%s", update_repo_name);
+   arg6 = g_strdup_printf ("repos/%s", update_repo_name);
+   app_ref = g_strdup_printf ("app/org.test.Hello/%s/master",
+                              flatpak_get_default_arch ());
+   app_locale_ref = g_strdup_printf ("runtime/org.test.Hello.Locale/%s/master",
+                                     flatpak_get_default_arch ());
++#ifndef FLATPAK_DISABLE_GPG
+   argv[2] = gpgargs[0];
+   argv[3] = gpgargs[1];
+   argv[5] = arg5;
+   argv[6] = arg6;
+   argv[7] = app_ref;
+   argv[8] = app_locale_ref;
++#else
++  argv[3] = arg5;
++  argv[4] = arg6;
++  argv[5] = app_ref;
++  argv[6] = app_locale_ref;
++#endif
+ 
+   run_test_subprocess (argv, RUN_TEST_SUBPROCESS_DEFAULT);
+ }
+@@ -2406,14 +2445,23 @@ static void
+ update_repo (const char *update_repo_name)
+ {
+   g_autofree char *arg4 = NULL;
++#ifndef FLATPAK_DISABLE_GPG
+   char *argv[] = { "flatpak", "build-update-repo", "--gpg-homedir=", "--gpg-sign=", NULL, NULL };
+   g_auto(GStrv) gpgargs = NULL;
+ 
+   gpgargs = g_strsplit (gpg_args, " ", 0);
++#else
++  char *argv[] = { "flatpak", "build-update-repo", NULL, NULL };
++#endif
++
+   arg4 = g_strdup_printf ("repos/%s", update_repo_name);
++#ifndef FLATPAK_DISABLE_GPG
+   argv[2] = gpgargs[0];
+   argv[3] = gpgargs[1];
+   argv[4] = arg4;
++#else
++  argv[2] = arg4;
++#endif
+ 
+   run_test_subprocess (argv, RUN_TEST_SUBPROCESS_DEFAULT);
+ }
+@@ -2451,13 +2499,19 @@ _add_remote (const char *remote_repo_name,
+              const char *remote_name_override,
+              gboolean    system)
+ {
++#ifndef FLATPAK_DISABLE_GPG
+   char *argv[] = { "flatpak", "remote-add", NULL, "--gpg-import=", "--collection-id=", "name", "url", NULL };
+   g_autofree char *gpgimport = NULL;
++#else
++  char *argv[] = { "flatpak", "remote-add", NULL, "--collection-id=", "name", "url", NULL };
++#endif
+   g_autofree char *collection_id_arg = NULL;
+   g_autofree char *remote_name = NULL;
+   g_autofree char *repo_url = NULL;
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   gpgimport = g_strdup_printf ("--gpg-import=%s/pubring.gpg", gpg_homedir);
++#endif
+   repo_url = g_strdup_printf ("http://127.0.0.1:%s/%s", httpd_port, remote_repo_name);
+   collection_id_arg = g_strdup_printf ("--collection-id=%s", repo_collection_id);
+   if (remote_name_override != NULL)
+@@ -2466,10 +2520,16 @@ _add_remote (const char *remote_repo_name,
+     remote_name = g_strdup_printf ("%s-repo", remote_repo_name);
+ 
+   argv[2] = system ? "--system" : "--user";
++#ifndef FLATPAK_DISABLE_GPG
+   argv[3] = gpgimport;
+   argv[4] = collection_id_arg;
+   argv[5] = remote_name;
+   argv[6] = repo_url;
++#else
++  argv[3] = collection_id_arg;
++  argv[4] = remote_name;
++  argv[5] = repo_url;
++#endif
+ 
+   run_test_subprocess (argv, RUN_TEST_SUBPROCESS_DEFAULT);
+ }
+@@ -2608,6 +2668,7 @@ setup_repo (void)
+   add_flatpakrepo ("test-runtime-only");
+ }
+ 
++#ifndef FLATPAK_DISABLE_GPG
+ static void
+ copy_file (const char *src, const char *dest)
+ {
+@@ -2641,6 +2702,7 @@ copy_gpg (void)
+   g_free (src);
+   g_free (dest);
+ }
++#endif
+ 
+ GTestDBus *test_bus = NULL;
+ 
+@@ -2698,12 +2760,14 @@ global_setup (void)
+   g_setenv ("FLATPAK_CONFIG_DIR", flatpak_configdir, TRUE);
+   g_test_message ("setting FLATPAK_CONFIG_DIR=%s", flatpak_configdir);
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   gpg_homedir = g_strconcat (testdir, "/gpghome", NULL);
+   g_mkdir_with_parents (gpg_homedir, S_IRWXU | S_IRWXG | S_IRWXO);
+ 
+   gpg_args = g_strdup_printf ("--gpg-homedir=%s --gpg-sign=%s", gpg_homedir, gpg_id);
+   g_setenv ("GPGARGS", gpg_args, TRUE);
+   g_test_message ("setting GPGARGS=%s", gpg_args);
++#endif
+ 
+   g_reload_user_special_dirs_cache ();
+ 
+@@ -2728,7 +2792,9 @@ global_setup (void)
+ 
+   g_test_dbus_up (test_bus);
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   copy_gpg ();
++#endif
+   setup_multiple_installations ();
+   setup_repo ();
+   make_bundle ();
+@@ -2737,19 +2803,22 @@ global_setup (void)
+ static void
+ global_teardown (void)
+ {
++#ifndef FLATPAK_DISABLE_GPG
+   char *argv[] = { "gpg-connect-agent", "--homedir", "<placeholder>", "killagent", "/bye", NULL };
++#endif
+ 
+   if (g_getenv ("SKIP_TEARDOWN"))
+     return;
+ 
+   g_test_dbus_down (test_bus);
+ 
+-  argv[2] = gpg_homedir;
+-
+   if (httpd_pid != -1)
+     kill (httpd_pid, SIGKILL);
+ 
++#ifndef FLATPAK_DISABLE_GPG
++  argv[2] = gpg_homedir;
+   run_test_subprocess (argv, RUN_TEST_SUBPROCESS_IGNORE_FAILURE);
++#endif
+ 
+   glnx_shutil_rm_rf_at (-1, testdir, NULL, NULL);
+   g_free (testdir);
+-- 
+2.30.0
+

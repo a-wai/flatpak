@@ -1,0 +1,344 @@
+From 0991faa461b66446aceeaa7d952a105725b1c85d Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Wed, 10 Mar 2021 17:09:59 +0100
+Subject: [PATCH 10/26] common: utils: allow signing data using ED25519
+
+OSTree introduced a new signing API in version 2020.4 (`ostree_sign_*`)
+as an alternative to GPG signatures. Both signatures type can coexist,
+it would therefore be interesting to offer the same possibility in
+flatpak.
+
+This commit lays the groundwork for ED25519 signatures support by
+modifying the `flatpak_repo_generate_appstream` and
+`flatpak_repo_update` functions, allowing those to sign the summary and
+commits if appropriate keys are provided.
+---
+ app/flatpak-builtins-build-commit-from.c   |   4 +-
+ app/flatpak-builtins-build-export.c        |   4 +-
+ app/flatpak-builtins-build-import-bundle.c |   4 +-
+ app/flatpak-builtins-build-update-repo.c   |   4 +-
+ common/flatpak-utils-private.h             |   4 +
+ common/flatpak-utils.c                     | 145 +++++++++++++++++++--
+ 6 files changed, 151 insertions(+), 14 deletions(-)
+
+diff --git a/app/flatpak-builtins-build-commit-from.c b/app/flatpak-builtins-build-commit-from.c
+index 73ef3211..f4edf09a 100644
+--- a/app/flatpak-builtins-build-commit-from.c
++++ b/app/flatpak-builtins-build-commit-from.c
+@@ -730,7 +730,7 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
+     return FALSE;
+ 
+   if (opt_update_appstream &&
+-      !flatpak_repo_generate_appstream (dst_repo, (const char **) opt_gpg_key_ids, opt_gpg_homedir, 0, cancellable, error))
++      !flatpak_repo_generate_appstream (dst_repo, (const char **) opt_gpg_key_ids, opt_gpg_homedir, NULL, NULL, 0, cancellable, error))
+     return FALSE;
+ 
+   if (!opt_no_update_summary)
+@@ -744,6 +744,8 @@ flatpak_builtin_build_commit_from (int argc, char **argv, GCancellable *cancella
+       if (!flatpak_repo_update (dst_repo, flags,
+                                 (const char **) opt_gpg_key_ids,
+                                 opt_gpg_homedir,
++                                NULL,
++                                NULL,
+                                 cancellable,
+                                 error))
+         return FALSE;
+diff --git a/app/flatpak-builtins-build-export.c b/app/flatpak-builtins-build-export.c
+index 05891ff1..063c38fe 100644
+--- a/app/flatpak-builtins-build-export.c
++++ b/app/flatpak-builtins-build-export.c
+@@ -1132,7 +1132,7 @@ flatpak_builtin_build_export (int argc, char **argv, GCancellable *cancellable,
+     goto out;
+ 
+   if (opt_update_appstream &&
+-      !flatpak_repo_generate_appstream (repo, (const char **) opt_gpg_key_ids, opt_gpg_homedir,
++      !flatpak_repo_generate_appstream (repo, (const char **) opt_gpg_key_ids, opt_gpg_homedir, NULL, NULL,
+                                         (opt_timestamp != NULL) ? ts.tv_sec : 0, cancellable, error))
+     return FALSE;
+ 
+@@ -1147,6 +1147,8 @@ flatpak_builtin_build_export (int argc, char **argv, GCancellable *cancellable,
+       if (!flatpak_repo_update (repo, flags,
+                                 (const char **) opt_gpg_key_ids,
+                                 opt_gpg_homedir,
++                                NULL,
++                                NULL,
+                                 cancellable,
+                                 error))
+         goto out;
+diff --git a/app/flatpak-builtins-build-import-bundle.c b/app/flatpak-builtins-build-import-bundle.c
+index 11cdacf5..28ee2a5c 100644
+--- a/app/flatpak-builtins-build-import-bundle.c
++++ b/app/flatpak-builtins-build-import-bundle.c
+@@ -240,7 +240,7 @@ flatpak_builtin_build_import (int argc, char **argv, GCancellable *cancellable,
+     }
+ 
+   if (opt_update_appstream &&
+-      !flatpak_repo_generate_appstream (repo, (const char **) opt_gpg_key_ids, opt_gpg_homedir, 0, cancellable, error))
++      !flatpak_repo_generate_appstream (repo, (const char **) opt_gpg_key_ids, opt_gpg_homedir, NULL, NULL, 0, cancellable, error))
+     return FALSE;
+ 
+   if (!opt_no_update_summary)
+@@ -254,6 +254,8 @@ flatpak_builtin_build_import (int argc, char **argv, GCancellable *cancellable,
+       if (!flatpak_repo_update (repo, flags,
+                                 (const char **) opt_gpg_key_ids,
+                                 opt_gpg_homedir,
++                                NULL,
++                                NULL,
+                                 cancellable,
+                                 error))
+         return FALSE;
+diff --git a/app/flatpak-builtins-build-update-repo.c b/app/flatpak-builtins-build-update-repo.c
+index 2d7dd3c9..37f74ea1 100644
+--- a/app/flatpak-builtins-build-update-repo.c
++++ b/app/flatpak-builtins-build-update-repo.c
+@@ -609,7 +609,7 @@ flatpak_builtin_build_update_repo (int argc, char **argv,
+   if (!opt_no_update_appstream)
+     {
+       g_print (_("Updating appstream branch\n"));
+-      if (!flatpak_repo_generate_appstream (repo, (const char **) opt_gpg_key_ids, opt_gpg_homedir, 0, cancellable, error))
++      if (!flatpak_repo_generate_appstream (repo, (const char **) opt_gpg_key_ids, opt_gpg_homedir, NULL, NULL, 0, cancellable, error))
+         return FALSE;
+     }
+ 
+@@ -638,7 +638,7 @@ flatpak_builtin_build_update_repo (int argc, char **argv,
+         flags |= FLATPAK_REPO_UPDATE_FLAG_DISABLE_INDEX;
+ 
+       g_print (_("Updating summary\n"));
+-      if (!flatpak_repo_update (repo, flags, (const char **) opt_gpg_key_ids, opt_gpg_homedir, cancellable, error))
++      if (!flatpak_repo_update (repo, flags, (const char **) opt_gpg_key_ids, opt_gpg_homedir, NULL, NULL, cancellable, error))
+         return FALSE;
+     }
+ 
+diff --git a/common/flatpak-utils-private.h b/common/flatpak-utils-private.h
+index 1a921547..8e525537 100644
+--- a/common/flatpak-utils-private.h
++++ b/common/flatpak-utils-private.h
+@@ -472,6 +472,8 @@ gboolean flatpak_repo_update (OstreeRepo            *repo,
+                               FlatpakRepoUpdateFlags flags,
+                               const char           **gpg_key_ids,
+                               const char            *gpg_homedir,
++                              const char           **key_ids,
++                              const char            *sign_name,
+                               GCancellable          *cancellable,
+                               GError               **error);
+ gboolean flatpak_repo_collect_sizes (OstreeRepo   *repo,
+@@ -801,6 +803,8 @@ gboolean flatpak_appstream_xml_root_to_data (FlatpakXml *appstream_root,
+ gboolean   flatpak_repo_generate_appstream (OstreeRepo   *repo,
+                                             const char  **gpg_key_ids,
+                                             const char   *gpg_homedir,
++                                            const char  **key_ids,
++                                            const char   *sign_name,
+                                             guint64       timestamp,
+                                             GCancellable *cancellable,
+                                             GError      **error);
+diff --git a/common/flatpak-utils.c b/common/flatpak-utils.c
+index 7fc5df57..44131af0 100644
+--- a/common/flatpak-utils.c
++++ b/common/flatpak-utils.c
+@@ -4715,6 +4715,16 @@ flatpak_repo_gc_digested_summaries (OstreeRepo *repo,
+   return TRUE;
+ }
+ 
++/* Convert a GBytes into a GVariant of type ay (byte array) */
++static GVariant *
++ot_gvariant_new_ay_bytes (GBytes *bytes)
++{
++  gsize size;
++  gconstpointer data = g_bytes_get_data (bytes, &size);
++  g_bytes_ref (bytes);
++  return g_variant_new_from_data (G_VARIANT_TYPE ("ay"), data, size,
++                                  TRUE, (GDestroyNotify)g_bytes_unref, bytes);
++}
+ 
+ /* Update the metadata in the summary file for @repo, and then re-sign the file.
+  * If the repo has a collection ID set, additionally store the metadata on a
+@@ -4734,6 +4744,8 @@ flatpak_repo_update (OstreeRepo   *repo,
+                      FlatpakRepoUpdateFlags flags,
+                      const char  **gpg_key_ids,
+                      const char   *gpg_homedir,
++                     const char  **key_ids,
++                     const char   *sign_name,
+                      GCancellable *cancellable,
+                      GError      **error)
+ {
+@@ -4864,18 +4876,70 @@ flatpak_repo_update (OstreeRepo   *repo,
+   if (!ostree_repo_static_delta_reindex (repo, 0, NULL, cancellable, error))
+     return FALSE;
+ 
+-  if (summary_index && gpg_key_ids)
++  if (summary_index)
+     {
+       g_autoptr(GBytes) index_bytes = g_variant_get_data_as_bytes (summary_index);
+-
+-      if (!ostree_repo_gpg_sign_data (repo, index_bytes,
+-                                      NULL,
+-                                      gpg_key_ids,
+-                                      gpg_homedir,
+-                                      &index_sig,
+-                                      cancellable,
+-                                      error))
++      g_autoptr(GBytes) sig_bytes = NULL;
++      g_autoptr(GVariant) sig_variant = NULL;
++      g_autoptr(GVariant) signatures = NULL;
++      g_autoptr(GVariant) res = NULL;
++      GVariantDict dict;
++      gboolean has_sig = FALSE;
++
++      if (gpg_key_ids && !ostree_repo_gpg_sign_data (repo, index_bytes,
++                                                     NULL,
++                                                     gpg_key_ids,
++                                                     gpg_homedir,
++                                                     &sig_bytes,
++                                                     cancellable,
++                                                     error))
+         return FALSE;
++
++      if (sig_bytes)
++        {
++          signatures = g_variant_ref_sink (g_variant_new_from_bytes (OSTREE_SUMMARY_SIG_GVARIANT_FORMAT, sig_bytes, FALSE));
++          has_sig = TRUE;
++        }
++      g_variant_dict_init (&dict, signatures);
++
++      if (key_ids)
++        {
++          g_autoptr (OstreeSign) ot_sign = NULL;
++          g_autoptr (GVariantBuilder) sig_builder = NULL;
++          const char **iter;
++
++          /* Initialize crypto system */
++          sign_name = sign_name ?: OSTREE_SIGN_NAME_ED25519;
++
++          ot_sign = ostree_sign_get_by_name (sign_name, error);
++          if (ot_sign == NULL)
++            return FALSE;
++
++          sig_builder = g_variant_builder_new (G_VARIANT_TYPE (ostree_sign_metadata_format (ot_sign)));
++
++          for (iter = key_ids; iter && *iter; iter++)
++            {
++              g_autoptr (GBytes) signature = NULL;
++
++              if (!ostree_sign_set_sk (ot_sign, g_variant_new_string( *iter), error))
++                continue;
++
++              if (!ostree_sign_data (ot_sign, index_bytes, &signature, cancellable, error))
++                continue;
++
++              g_variant_builder_add (sig_builder, "@ay", ot_gvariant_new_ay_bytes (signature));
++              has_sig = TRUE;
++            }
++
++            g_variant_dict_insert_value (&dict, ostree_sign_metadata_key (ot_sign), g_variant_builder_end (sig_builder));
++        }
++
++        if (has_sig)
++          {
++            sig_variant = g_variant_ref_sink (g_variant_dict_end (&dict));
++            res = g_variant_get_normal_form (sig_variant);
++            index_sig = g_variant_get_data_as_bytes (res);
++          }
+     }
+ 
+   if (summary_index)
+@@ -4918,6 +4982,33 @@ flatpak_repo_update (OstreeRepo   *repo,
+         }
+     }
+ 
++  if (key_ids)
++    {
++      const char **iter;
++      g_autoptr (OstreeSign) sign = NULL;
++      g_autoptr (GVariant) keys = NULL;
++      g_autoptr (GVariantBuilder) builder = NULL;
++
++      /* Initialize crypto system */
++      sign_name = sign_name ?: OSTREE_SIGN_NAME_ED25519;
++
++      sign = ostree_sign_get_by_name (sign_name, error);
++      if (sign == NULL)
++        return FALSE;
++
++      builder = g_variant_builder_new (G_VARIANT_TYPE ("av"));
++      for (iter = key_ids; iter && *iter; iter++)
++        g_variant_builder_add_value (builder, g_variant_new_variant (g_variant_new_string (*iter)));
++
++      keys = g_variant_builder_end (builder);
++      if (!keys || !ostree_sign_summary (sign,
++                                         repo,
++                                         keys,
++                                         cancellable,
++                                         error))
++        return FALSE;
++    }
++
+   if (!disable_index &&
+       !flatpak_repo_gc_digested_summaries (repo, index_digest, old_index_digest, digested_summaries, digested_summary_cache, cancellable, error))
+     return FALSE;
+@@ -5499,6 +5590,8 @@ static gboolean
+ _flatpak_repo_generate_appstream (OstreeRepo   *repo,
+                                   const char  **gpg_key_ids,
+                                   const char   *gpg_homedir,
++                                  const char  **key_ids,
++                                  const char   *sign_name,
+                                   FlatpakDecomposed **all_refs_keys,
+                                   guint         n_keys,
+                                   GHashTable   *all_commits,
+@@ -5727,6 +5820,36 @@ _flatpak_repo_generate_appstream (OstreeRepo   *repo,
+                 }
+             }
+ 
++          if (key_ids)
++            {
++              const char **iter;
++              g_autoptr (OstreeSign) sign = NULL;
++
++              /* Initialize crypto system */
++              sign_name = sign_name ?: OSTREE_SIGN_NAME_ED25519;
++
++              sign = ostree_sign_get_by_name (sign_name, error);
++              if (sign == NULL)
++                return FALSE;
++
++              for (iter = key_ids; iter && *iter; iter++)
++                {
++                  const char *keyid = *iter;
++                  g_autoptr (GVariant) secret_key = NULL;
++
++                  secret_key = g_variant_new_string (keyid);
++                  if (!ostree_sign_set_sk (sign, secret_key, error))
++                    return FALSE;
++
++                  if (!ostree_sign_commit (sign,
++                                           repo,
++                                           commit_checksum,
++                                           cancellable,
++                                           error))
++                    return FALSE;
++                }
++            }
++
+           g_debug ("Creating appstream branch %s", branch);
+           if (collection_id != NULL)
+             {
+@@ -5748,6 +5871,8 @@ gboolean
+ flatpak_repo_generate_appstream (OstreeRepo   *repo,
+                                  const char  **gpg_key_ids,
+                                  const char   *gpg_homedir,
++                                 const char  **key_ids,
++                                 const char   *sign_name,
+                                  guint64       timestamp,
+                                  GCancellable *cancellable,
+                                  GError      **error)
+@@ -5840,6 +5965,8 @@ flatpak_repo_generate_appstream (OstreeRepo   *repo,
+           if (!_flatpak_repo_generate_appstream (repo,
+                                                  gpg_key_ids,
+                                                  gpg_homedir,
++                                                 key_ids,
++                                                 sign_name,
+                                                  all_refs_keys,
+                                                  n_keys,
+                                                  all_commits,
+-- 
+2.30.0
+

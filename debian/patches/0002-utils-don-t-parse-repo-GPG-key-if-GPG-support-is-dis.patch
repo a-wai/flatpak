@@ -1,0 +1,49 @@
+From bd943c70f89cf078dbeecb1817c1f3c043c760d0 Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Fri, 12 Feb 2021 15:28:32 +0100
+Subject: [PATCH 02/26] utils: don't parse repo GPG key if GPG support is
+ disabled
+
+When building flatpak without GPG support, it feels reasonable to assume
+ostree won't have GPG support either. This leads to errors when flatpak
+enables GPG verification for a remote, as ostree can't verify the
+signatures.
+
+We should therefore make sure `gpg-verify` options are `false` by
+default. This is achieved by not parsing the repo GPG key.
+---
+ common/flatpak-utils.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/common/flatpak-utils.c b/common/flatpak-utils.c
+index 56cbb06d..6cb6d5f8 100644
+--- a/common/flatpak-utils.c
++++ b/common/flatpak-utils.c
+@@ -2274,8 +2274,10 @@ flatpak_parse_repofile (const char   *remote_name,
+   if (nodeps)
+     g_key_file_set_boolean (config, group, "xa.nodeps", TRUE);
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   gpg_key = g_key_file_get_string (keyfile, source_group,
+                                    FLATPAK_REPO_GPGKEY_KEY, NULL);
++#endif
+   if (gpg_key != NULL)
+     {
+       guchar *decoded;
+@@ -2304,11 +2306,13 @@ flatpak_parse_repofile (const char   *remote_name,
+                                            FLATPAK_REPO_COLLECTION_ID_KEY, NULL);
+   if (collection_id != NULL)
+     {
++#ifndef FLATPAK_DISABLE_GPG
+       if (gpg_key == NULL)
+         {
+           flatpak_fail_error (error, FLATPAK_ERROR_INVALID_DATA, _("Collection ID requires GPG key to be provided"));
+           return NULL;
+         }
++#endif
+ 
+       g_key_file_set_string (config, group, "collection-id", collection_id);
+     }
+-- 
+2.30.0
+

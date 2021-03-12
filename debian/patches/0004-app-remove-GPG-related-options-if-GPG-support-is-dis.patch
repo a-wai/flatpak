@@ -1,0 +1,533 @@
+From acc95be22b95d6205954dd43c026d9adc11941de Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Fri, 12 Feb 2021 15:37:10 +0100
+Subject: [PATCH 04/26] app: remove GPG-related options if GPG support is
+ disabled
+
+In order to avoid confusion, all GPG-related command-line options are
+disabled when GPG isn't supported. Sane defaults are used where needed,
+so flatpak functionality isn't crippled.
+---
+ app/flatpak-builtins-build-bundle.c        | 10 ++++++++++
+ app/flatpak-builtins-build-commit-from.c   |  6 ++++--
+ app/flatpak-builtins-build-export.c        |  8 +++++---
+ app/flatpak-builtins-build-import-bundle.c |  6 ++++--
+ app/flatpak-builtins-build-sign.c          |  8 ++++++++
+ app/flatpak-builtins-build-update-repo.c   | 10 ++++++++--
+ app/flatpak-builtins-install.c             |  8 ++++++++
+ app/flatpak-builtins-remote-add.c          | 23 ++++++++++++++++++++++
+ app/flatpak-builtins-remote-modify.c       | 18 ++++++++++++++++-
+ 9 files changed, 87 insertions(+), 10 deletions(-)
+
+diff --git a/app/flatpak-builtins-build-bundle.c b/app/flatpak-builtins-build-bundle.c
+index 06ce36a2..59333049 100644
+--- a/app/flatpak-builtins-build-bundle.c
++++ b/app/flatpak-builtins-build-bundle.c
+@@ -46,11 +46,15 @@ static char *opt_arch;
+ static char *opt_repo_url;
+ static char *opt_runtime_repo;
+ static gboolean opt_runtime = FALSE;
++#ifndef FLATPAK_DISABLE_GPG
+ static char **opt_gpg_file;
++#endif
+ static gboolean opt_oci = FALSE;
+ static gboolean opt_oci_use_labels = TRUE; // Unused now
++#ifndef FLATPAK_DISABLE_GPG
+ static char **opt_gpg_key_ids;
+ static char *opt_gpg_homedir;
++#endif
+ static char *opt_from_commit;
+ 
+ static GOptionEntry options[] = {
+@@ -58,9 +62,11 @@ static GOptionEntry options[] = {
+   { "arch", 0, 0, G_OPTION_ARG_STRING, &opt_arch, N_("Arch to bundle for"), N_("ARCH") },
+   { "repo-url", 0, 0, G_OPTION_ARG_STRING, &opt_repo_url, N_("Url for repo"), N_("URL") },
+   { "runtime-repo", 0, 0, G_OPTION_ARG_STRING, &opt_runtime_repo, N_("Url for runtime flatpakrepo file"), N_("URL") },
++#ifndef FLATPAK_DISABLE_GPG
+   { "gpg-keys", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_gpg_file, N_("Add GPG key from FILE (- for stdin)"), N_("FILE") },
+   { "gpg-sign", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_gpg_key_ids, N_("GPG Key ID to sign the OCI image with"), N_("KEY-ID") },
+   { "gpg-homedir", 0, 0, G_OPTION_ARG_STRING, &opt_gpg_homedir, N_("GPG Homedir to use when looking for keyrings"), N_("HOMEDIR") },
++#endif
+   { "from-commit", 0, 0, G_OPTION_ARG_STRING, &opt_from_commit, N_("OSTree commit to create a delta bundle from"), N_("COMMIT") },
+   { "oci", 0, 0, G_OPTION_ARG_NONE, &opt_oci, N_("Export oci image instead of flatpak bundle"), NULL },
+   // This is not used anymore as it is the default, but accept it if old code uses it
+@@ -68,6 +74,7 @@ static GOptionEntry options[] = {
+   { NULL }
+ };
+ 
++#ifndef FLATPAK_DISABLE_GPG
+ static GBytes *
+ read_gpg_data (GCancellable *cancellable,
+                GError      **error)
+@@ -109,6 +116,7 @@ read_gpg_data (GCancellable *cancellable,
+ 
+   return flatpak_read_stream (source_stream, FALSE, error);
+ }
++#endif
+ 
+ static gboolean
+ get_bundle_appstream_data (GFile        *root,
+@@ -297,12 +305,14 @@ build_bundle (OstreeRepo *repo, const char *commit_checksum, GFile *file,
+   g_variant_builder_add (&metadata_builder, "{sv}", "collection-id",
+                          g_variant_new_string (collection_id ? collection_id : ""));
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   if (opt_gpg_file != NULL)
+     {
+       gpg_data = read_gpg_data (cancellable, error);
+       if (gpg_data == NULL)
+         return FALSE;
+     }
++#endif
+ 
+   if (gpg_data)
+     {
+diff --git a/app/flatpak-builtins-build-commit-from.c b/app/flatpak-builtins-build-commit-from.c
+index eaf427d2..73ef3211 100644
+--- a/app/flatpak-builtins-build-commit-from.c
++++ b/app/flatpak-builtins-build-commit-from.c
+@@ -42,8 +42,8 @@ static gboolean opt_no_update_summary;
+ static gboolean opt_untrusted;
+ static gboolean opt_disable_fsync;
+ static gboolean opt_force;
+-static char **opt_gpg_key_ids;
+-static char *opt_gpg_homedir;
++static char **opt_gpg_key_ids = NULL;
++static char *opt_gpg_homedir = NULL;
+ static char *opt_endoflife;
+ static char **opt_endoflife_rebase;
+ static char **opt_endoflife_rebase_new;
+@@ -64,8 +64,10 @@ static GOptionEntry options[] = {
+   { "body", 'b', 0, G_OPTION_ARG_STRING, &opt_body, N_("Full description"), N_("BODY") },
+   { "update-appstream", 0, 0, G_OPTION_ARG_NONE, &opt_update_appstream, N_("Update the appstream branch"), NULL },
+   { "no-update-summary", 0, 0, G_OPTION_ARG_NONE, &opt_no_update_summary, N_("Don't update the summary"), NULL },
++#ifndef FLATPAK_DISABLE_GPG
+   { "gpg-sign", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_gpg_key_ids, N_("GPG Key ID to sign the commit with"), N_("KEY-ID") },
+   { "gpg-homedir", 0, 0, G_OPTION_ARG_STRING, &opt_gpg_homedir, N_("GPG Homedir to use when looking for keyrings"), N_("HOMEDIR") },
++#endif
+   { "end-of-life", 0, 0, G_OPTION_ARG_STRING, &opt_endoflife, N_("Mark build as end-of-life"), N_("REASON") },
+   { "end-of-life-rebase", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_endoflife_rebase, N_("Mark refs matching the OLDID prefix as end-of-life, to be replaced with the given NEWID"), N_("OLDID=NEWID") },
+   { "token-type", 0, 0, G_OPTION_ARG_INT, &opt_token_type, N_("Set type of token needed to install this commit"), N_("VAL") },
+diff --git a/app/flatpak-builtins-build-export.c b/app/flatpak-builtins-build-export.c
+index 047f89f1..05891ff1 100644
+--- a/app/flatpak-builtins-build-export.c
++++ b/app/flatpak-builtins-build-export.c
+@@ -41,10 +41,10 @@ static gboolean opt_update_appstream;
+ static gboolean opt_no_update_summary;
+ static gboolean opt_disable_fsync;
+ static gboolean opt_disable_sandbox = FALSE;
+-static char **opt_gpg_key_ids;
++static char **opt_gpg_key_ids = NULL;
+ static char **opt_exclude;
+ static char **opt_include;
+-static char *opt_gpg_homedir;
++static char *opt_gpg_homedir = NULL;
+ static char *opt_files;
+ static char *opt_metadata;
+ static char *opt_timestamp = NULL;
+@@ -64,10 +64,12 @@ static GOptionEntry options[] = {
+   { "no-update-summary", 0, 0, G_OPTION_ARG_NONE, &opt_no_update_summary, N_("Don't update the summary"), NULL },
+   { "files", 0, 0, G_OPTION_ARG_STRING, &opt_files, N_("Use alternative directory for the files"), N_("SUBDIR") },
+   { "metadata", 0, 0, G_OPTION_ARG_STRING, &opt_metadata, N_("Use alternative file for the metadata"), N_("FILE") },
+-  { "gpg-sign", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_gpg_key_ids, N_("GPG Key ID to sign the commit with"), N_("KEY-ID") },
+   { "exclude", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_exclude, N_("Files to exclude"), N_("PATTERN") },
+   { "include", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_include, N_("Excluded files to include"), N_("PATTERN") },
++#ifndef FLATPAK_DISABLE_GPG
++  { "gpg-sign", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_gpg_key_ids, N_("GPG Key ID to sign the commit with"), N_("KEY-ID") },
+   { "gpg-homedir", 0, 0, G_OPTION_ARG_STRING, &opt_gpg_homedir, N_("GPG Homedir to use when looking for keyrings"), N_("HOMEDIR") },
++#endif
+   { "subset", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_subsets, "Add to a named subset", "SUBSET" },
+   { "end-of-life", 0, 0, G_OPTION_ARG_STRING, &opt_endoflife, N_("Mark build as end-of-life"), N_("REASON") },
+   { "end-of-life-rebase", 0, 0, G_OPTION_ARG_STRING, &opt_endoflife_rebase, N_("Mark build as end-of-life, to be replaced with the given ID"), N_("ID") },
+diff --git a/app/flatpak-builtins-build-import-bundle.c b/app/flatpak-builtins-build-import-bundle.c
+index dae1c3b6..11cdacf5 100644
+--- a/app/flatpak-builtins-build-import-bundle.c
++++ b/app/flatpak-builtins-build-import-bundle.c
+@@ -35,8 +35,8 @@
+ 
+ static char *opt_ref;
+ static gboolean opt_oci = FALSE;
+-static char **opt_gpg_key_ids;
+-static char *opt_gpg_homedir;
++static char **opt_gpg_key_ids = NULL;
++static char *opt_gpg_homedir = NULL;
+ static gboolean opt_update_appstream;
+ static gboolean opt_no_update_summary;
+ static gboolean opt_no_summary_index = FALSE;
+@@ -44,8 +44,10 @@ static gboolean opt_no_summary_index = FALSE;
+ static GOptionEntry options[] = {
+   { "ref", 0, 0, G_OPTION_ARG_STRING, &opt_ref, N_("Override the ref used for the imported bundle"), N_("REF") },
+   { "oci", 0, 0, G_OPTION_ARG_NONE, &opt_oci, N_("Import oci image instead of flatpak bundle"), NULL },
++#ifndef FLATPAK_DISABLE_GPG
+   { "gpg-sign", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_gpg_key_ids, N_("GPG Key ID to sign the commit with"), N_("KEY-ID") },
+   { "gpg-homedir", 0, 0, G_OPTION_ARG_STRING, &opt_gpg_homedir, N_("GPG Homedir to use when looking for keyrings"), N_("HOMEDIR") },
++#endif
+   { "update-appstream", 0, 0, G_OPTION_ARG_NONE, &opt_update_appstream, N_("Update the appstream branch"), NULL },
+   { "no-update-summary", 0, 0, G_OPTION_ARG_NONE, &opt_no_update_summary, N_("Don't update the summary"), NULL },
+   { "no-summary-index", 0, 0, G_OPTION_ARG_NONE, &opt_no_summary_index, N_("Don't generate a summary index"), NULL },
+diff --git a/app/flatpak-builtins-build-sign.c b/app/flatpak-builtins-build-sign.c
+index f4065cd2..9f18f42b 100644
+--- a/app/flatpak-builtins-build-sign.c
++++ b/app/flatpak-builtins-build-sign.c
+@@ -34,14 +34,18 @@
+ 
+ static char *opt_arch;
+ static gboolean opt_runtime;
++#ifndef FLATPAK_DISABLE_GPG
+ static char **opt_gpg_key_ids;
+ static char *opt_gpg_homedir;
++#endif
+ 
+ static GOptionEntry options[] = {
+   { "arch", 0, 0, G_OPTION_ARG_STRING, &opt_arch, N_("Arch to install for"), N_("ARCH") },
+   { "runtime", 0, 0, G_OPTION_ARG_NONE, &opt_runtime, N_("Look for runtime with the specified name"), NULL },
++#ifndef FLATPAK_DISABLE_GPG
+   { "gpg-sign", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_gpg_key_ids, N_("GPG Key ID to sign the commit with"), N_("KEY-ID") },
+   { "gpg-homedir", 0, 0, G_OPTION_ARG_STRING, &opt_gpg_homedir, N_("GPG Homedir to use when looking for keyrings"), N_("HOMEDIR") },
++#endif
+   { NULL }
+ };
+ 
+@@ -49,6 +53,7 @@ static GOptionEntry options[] = {
+ gboolean
+ flatpak_builtin_build_sign (int argc, char **argv, GCancellable *cancellable, GError **error)
+ {
++#ifndef FLATPAK_DISABLE_GPG
+   g_autoptr(GOptionContext) context = NULL;
+   g_autoptr(GFile) repofile = NULL;
+   g_autoptr(OstreeRepo) repo = NULL;
+@@ -161,6 +166,9 @@ flatpak_builtin_build_sign (int argc, char **argv, GCancellable *cancellable, GE
+     }
+ 
+   return TRUE;
++#else
++  return flatpak_fail (error, _("GPG support disabled at build time"));
++#endif
+ }
+ 
+ gboolean
+diff --git a/app/flatpak-builtins-build-update-repo.c b/app/flatpak-builtins-build-update-repo.c
+index a2c5081b..2d7dd3c9 100644
+--- a/app/flatpak-builtins-build-update-repo.c
++++ b/app/flatpak-builtins-build-update-repo.c
+@@ -44,12 +44,14 @@ static char *opt_collection_id = NULL;
+ static gboolean opt_deploy_sideload_collection_id = FALSE;
+ static gboolean opt_deploy_collection_id = FALSE;
+ static gboolean opt_no_summary_index = FALSE;
++#ifndef FLATPAK_DISABLE_GPG
+ static char **opt_gpg_import;
++#endif
+ static char *opt_generate_delta_from;
+ static char *opt_generate_delta_to;
+ static char *opt_generate_delta_ref;
+-static char *opt_gpg_homedir;
+-static char **opt_gpg_key_ids;
++static char *opt_gpg_homedir = NULL;
++static char **opt_gpg_key_ids = NULL;
+ static gboolean opt_prune;
+ static gboolean opt_generate_deltas;
+ static gboolean opt_no_update_appstream;
+@@ -77,9 +79,11 @@ static GOptionEntry options[] = {
+   { "authenticator-install", 0, 0, G_OPTION_ARG_NONE, &opt_authenticator_install, N_("Autoinstall authenticator for this repository"), NULL },
+   { "no-authenticator-install", 0, G_OPTION_FLAG_REVERSE, G_OPTION_ARG_NONE, &opt_authenticator_install, N_("Don't autoinstall authenticator for this repository"), NULL },
+   { "authenticator-option", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_authenticator_options, N_("Authenticator option"), N_("KEY=VALUE") },
++#ifndef FLATPAK_DISABLE_GPG
+   { "gpg-import", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_gpg_import, N_("Import new default GPG public key from FILE"), N_("FILE") },
+   { "gpg-sign", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_gpg_key_ids, N_("GPG Key ID to sign the summary with"), N_("KEY-ID") },
+   { "gpg-homedir", 0, 0, G_OPTION_ARG_STRING, &opt_gpg_homedir, N_("GPG Homedir to use when looking for keyrings"), N_("HOMEDIR") },
++#endif
+   { "generate-static-deltas", 0, 0, G_OPTION_ARG_NONE, &opt_generate_deltas, N_("Generate delta files"), NULL },
+   { "no-update-summary", 0, 0, G_OPTION_ARG_NONE, &opt_no_update_summary, N_("Don't update the summary"), NULL },
+   { "no-update-appstream", 0, 0, G_OPTION_ARG_NONE, &opt_no_update_appstream, N_("Don't update the appstream branch"), NULL },
+@@ -590,6 +594,7 @@ flatpak_builtin_build_update_repo (int argc, char **argv,
+       !flatpak_repo_set_deploy_collection_id (repo, TRUE, error))
+     return FALSE;
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   if (opt_gpg_import)
+     {
+       g_autoptr(GBytes) gpg_data = flatpak_load_gpg_keys (opt_gpg_import, cancellable, error);
+@@ -599,6 +604,7 @@ flatpak_builtin_build_update_repo (int argc, char **argv,
+       if (!flatpak_repo_set_gpg_keys (repo, gpg_data, error))
+         return FALSE;
+     }
++#endif
+ 
+   if (!opt_no_update_appstream)
+     {
+diff --git a/app/flatpak-builtins-install.c b/app/flatpak-builtins-install.c
+index ee74fb1f..0751ff5e 100644
+--- a/app/flatpak-builtins-install.c
++++ b/app/flatpak-builtins-install.c
+@@ -41,7 +41,9 @@
+ #include "flatpak-chain-input-stream-private.h"
+ 
+ static char *opt_arch;
++#ifndef FLATPAK_DISABLE_GPG
+ static char **opt_gpg_file;
++#endif
+ static char **opt_subpaths;
+ static char **opt_sideload_repos;
+ static gboolean opt_no_pull;
+@@ -71,7 +73,9 @@ static GOptionEntry options[] = {
+   { "app", 0, 0, G_OPTION_ARG_NONE, &opt_app, N_("Look for app with the specified name"), NULL },
+   { "bundle", 0, 0, G_OPTION_ARG_NONE, &opt_bundle, N_("Assume LOCATION is a .flatpak single-file bundle"), NULL },
+   { "from", 0, 0, G_OPTION_ARG_NONE, &opt_from, N_("Assume LOCATION is a .flatpakref application description"), NULL },
++#ifndef FLATPAK_DISABLE_GPG
+   { "gpg-file", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_gpg_file, N_("Check bundle signatures with GPG key from FILE (- for stdin)"), N_("FILE") },
++#endif
+   { "subpath", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_subpaths, N_("Only install this subpath"), N_("PATH") },
+   { "assumeyes", 'y', 0, G_OPTION_ARG_NONE, &opt_yes, N_("Automatically answer yes for all questions"), NULL },
+   { "reinstall", 0, 0, G_OPTION_ARG_NONE, &opt_reinstall, N_("Uninstall first if already installed"), NULL },
+@@ -82,6 +86,7 @@ static GOptionEntry options[] = {
+   { NULL }
+ };
+ 
++#ifndef FLATPAK_DISABLE_GPG
+ static GBytes *
+ read_gpg_data (GCancellable *cancellable,
+                GError      **error)
+@@ -123,6 +128,7 @@ read_gpg_data (GCancellable *cancellable,
+ 
+   return flatpak_read_stream (source_stream, FALSE, error);
+ }
++#endif
+ 
+ static gboolean
+ install_bundle (FlatpakDir *dir,
+@@ -149,6 +155,7 @@ install_bundle (FlatpakDir *dir,
+   if (!g_file_is_native (file))
+     return flatpak_fail (error, _("Remote bundles are not supported"));
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   if (opt_gpg_file != NULL)
+     {
+       /* Override gpg_data from file */
+@@ -156,6 +163,7 @@ install_bundle (FlatpakDir *dir,
+       if (gpg_data == NULL)
+         return FALSE;
+     }
++#endif
+ 
+   if (opt_noninteractive)
+     transaction = flatpak_quiet_transaction_new (dir, error);
+diff --git a/app/flatpak-builtins-remote-add.c b/app/flatpak-builtins-remote-add.c
+index c3d1e3cd..4ae021d9 100644
+--- a/app/flatpak-builtins-remote-add.c
++++ b/app/flatpak-builtins-remote-add.c
+@@ -33,8 +33,10 @@
+ #include "flatpak-builtins-utils.h"
+ #include "flatpak-utils-private.h"
+ 
++#ifndef FLATPAK_DISABLE_GPG
+ static gboolean opt_no_gpg_verify;
+ static gboolean opt_do_gpg_verify;
++#endif
+ static gboolean opt_do_enumerate;
+ static gboolean opt_no_enumerate;
+ static gboolean opt_do_deps;
+@@ -53,7 +55,9 @@ static char *opt_default_branch;
+ static char *opt_url;
+ static char *opt_collection_id = NULL;
+ static gboolean opt_from;
++#ifndef FLATPAK_DISABLE_GPG
+ static char **opt_gpg_import;
++#endif
+ static char *opt_authenticator_name = NULL;
+ static char **opt_authenticator_options = NULL;
+ static gboolean opt_authenticator_install = -1;
+@@ -66,7 +70,9 @@ static GOptionEntry add_options[] = {
+ };
+ 
+ static GOptionEntry common_options[] = {
++#ifndef FLATPAK_DISABLE_GPG
+   { "no-gpg-verify", 0, 0, G_OPTION_ARG_NONE, &opt_no_gpg_verify, N_("Disable GPG verification"), NULL },
++#endif
+   { "no-enumerate", 0, 0, G_OPTION_ARG_NONE, &opt_no_enumerate, N_("Mark the remote as don't enumerate"), NULL },
+   { "no-use-for-deps", 0, 0, G_OPTION_ARG_NONE, &opt_no_deps, N_("Mark the remote as don't use for deps"), NULL },
+   { "prio", 0, 0, G_OPTION_ARG_INT, &opt_prio, N_("Set priority (default 1, higher is more prioritized)"), N_("PRIORITY") },
+@@ -78,7 +84,9 @@ static GOptionEntry common_options[] = {
+   { "icon", 0, 0, G_OPTION_ARG_STRING, &opt_icon, N_("URL for an icon for this remote"), N_("URL") },
+   { "default-branch", 0, 0, G_OPTION_ARG_STRING, &opt_default_branch, N_("Default branch to use for this remote"), N_("BRANCH") },
+   { "collection-id", 0, 0, G_OPTION_ARG_STRING, &opt_collection_id, N_("Collection ID"), N_("COLLECTION-ID") },
++#ifndef FLATPAK_DISABLE_GPG
+   { "gpg-import", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_gpg_import, N_("Import GPG key from FILE (- for stdin)"), N_("FILE") },
++#endif
+   { "filter", 0, 0, G_OPTION_ARG_FILENAME, &opt_filter, N_("Set path to local filter FILE"), N_("FILE") },
+   { "disable", 0, 0, G_OPTION_ARG_NONE, &opt_disable, N_("Disable the remote"), NULL },
+   { "authenticator-name", 0, 0, G_OPTION_ARG_STRING, &opt_authenticator_name, N_("Name of authenticator"), N_("NAME") },
+@@ -98,6 +106,7 @@ get_config_from_opts (GKeyFile *config,
+ {
+   g_autofree char *group = g_strdup_printf ("remote \"%s\"", remote_name);
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   if (opt_no_gpg_verify)
+     {
+       g_key_file_set_boolean (config, group, "gpg-verify", FALSE);
+@@ -109,6 +118,10 @@ get_config_from_opts (GKeyFile *config,
+       g_key_file_set_boolean (config, group, "gpg-verify", TRUE);
+       g_key_file_set_boolean (config, group, "gpg-verify-summary", TRUE);
+     }
++#else
++  g_key_file_set_boolean (config, group, "gpg-verify", FALSE);
++  g_key_file_set_boolean (config, group, "gpg-verify-summary", FALSE);
++#endif
+ 
+   if (opt_url)
+     {
+@@ -187,6 +200,7 @@ get_config_from_opts (GKeyFile *config,
+       g_key_file_set_string (config, group, "xa.prio", prio_as_string);
+     }
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   if (opt_gpg_import != NULL)
+     {
+       g_clear_pointer (gpg_data, g_bytes_unref); /* Free if set from flatpakrepo file */
+@@ -194,6 +208,7 @@ get_config_from_opts (GKeyFile *config,
+       if (*gpg_data == NULL)
+         return FALSE;
+     }
++#endif
+ 
+   if (opt_authenticator_name)
+     {
+@@ -319,9 +334,11 @@ flatpak_builtin_remote_add (int argc, char **argv,
+       !ostree_validate_collection_id (opt_collection_id, &local_error))
+     return flatpak_fail (error, _("‘%s’ is not a valid collection ID: %s"), opt_collection_id, local_error->message);
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   if (opt_collection_id != NULL &&
+       (opt_no_gpg_verify || opt_gpg_import == NULL || opt_gpg_import[0] == NULL))
+     return flatpak_fail (error, _("GPG verification is required if collections are enabled"));
++#endif
+ 
+   remote_name = argv[1];
+   location = argv[2];
+@@ -335,7 +352,9 @@ flatpak_builtin_remote_add (int argc, char **argv,
+     }
+   else
+     {
++#ifndef FLATPAK_DISABLE_GPG
+       gboolean is_oci;
++#endif
+ 
+       config = g_key_file_new ();
+       file = g_file_new_for_commandline_arg (location);
+@@ -345,10 +364,12 @@ flatpak_builtin_remote_add (int argc, char **argv,
+         remote_url = g_strdup (location);
+       opt_url = remote_url;
+ 
++#ifndef FLATPAK_DISABLE_GPG
+       /* Default to gpg verify, except for OCI registries */
+       is_oci = opt_url && g_str_has_prefix (opt_url, "oci+");
+       if (!opt_no_gpg_verify && !is_oci)
+         opt_do_gpg_verify = TRUE;
++#endif
+     }
+ 
+   if (!get_config_from_opts (config, remote_name, &gpg_data, error))
+@@ -386,6 +407,7 @@ flatpak_builtin_remote_add (int argc, char **argv,
+       return flatpak_fail (error, _("Remote %s already exists"), remote_name);
+     }
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   if (opt_gpg_import != NULL)
+     {
+       g_clear_pointer (&gpg_data, g_bytes_unref);
+@@ -393,6 +415,7 @@ flatpak_builtin_remote_add (int argc, char **argv,
+       if (gpg_data == NULL)
+         return FALSE;
+     }
++#endif
+ 
+   if (opt_authenticator_name && !g_dbus_is_name (opt_authenticator_name))
+     return flatpak_fail (error, _("Invalid authenticator name %s"), opt_authenticator_name);
+diff --git a/app/flatpak-builtins-remote-modify.c b/app/flatpak-builtins-remote-modify.c
+index fb9a9a25..6e0e9c8e 100644
+--- a/app/flatpak-builtins-remote-modify.c
++++ b/app/flatpak-builtins-remote-modify.c
+@@ -33,8 +33,10 @@
+ #include "flatpak-builtins-utils.h"
+ #include "flatpak-utils-private.h"
+ 
++#ifndef FLATPAK_DISABLE_GPG
+ static gboolean opt_no_gpg_verify;
+ static gboolean opt_do_gpg_verify;
++#endif
+ static gboolean opt_do_enumerate;
+ static gboolean opt_no_enumerate;
+ static gboolean opt_do_deps;
+@@ -59,11 +61,14 @@ static char *opt_collection_id = NULL;
+ static char *opt_authenticator_name = NULL;
+ static char **opt_authenticator_options = NULL;
+ static gboolean opt_authenticator_install = -1;
++#ifndef FLATPAK_DISABLE_GPG
+ static char **opt_gpg_import;
+-
++#endif
+ 
+ static GOptionEntry modify_options[] = {
++#ifndef FLATPAK_DISABLE_GPG
+   { "gpg-verify", 0, 0, G_OPTION_ARG_NONE, &opt_do_gpg_verify, N_("Enable GPG verification"), NULL },
++#endif
+   { "enumerate", 0, 0, G_OPTION_ARG_NONE, &opt_do_enumerate, N_("Mark the remote as enumerate"), NULL },
+   { "use-for-deps", 0, 0, G_OPTION_ARG_NONE, &opt_do_deps, N_("Mark the remote as used for dependencies"), NULL },
+   { "url", 0, 0, G_OPTION_ARG_STRING, &opt_url, N_("Set a new url"), N_("URL") },
+@@ -74,7 +79,9 @@ static GOptionEntry modify_options[] = {
+ };
+ 
+ static GOptionEntry common_options[] = {
++#ifndef FLATPAK_DISABLE_GPG
+   { "no-gpg-verify", 0, 0, G_OPTION_ARG_NONE, &opt_no_gpg_verify, N_("Disable GPG verification"), NULL },
++#endif
+   { "no-enumerate", 0, 0, G_OPTION_ARG_NONE, &opt_no_enumerate, N_("Mark the remote as don't enumerate"), NULL },
+   { "no-use-for-deps", 0, 0, G_OPTION_ARG_NONE, &opt_no_deps, N_("Mark the remote as don't use for deps"), NULL },
+   { "prio", 0, 0, G_OPTION_ARG_INT, &opt_prio, N_("Set priority (default 1, higher is more prioritized)"), N_("PRIORITY") },
+@@ -85,7 +92,9 @@ static GOptionEntry common_options[] = {
+   { "icon", 0, 0, G_OPTION_ARG_STRING, &opt_icon, N_("URL for an icon for this remote"), N_("URL") },
+   { "default-branch", 0, 0, G_OPTION_ARG_STRING, &opt_default_branch, N_("Default branch to use for this remote"), N_("BRANCH") },
+   { "collection-id", 0, 0, G_OPTION_ARG_STRING, &opt_collection_id, N_("Collection ID"), N_("COLLECTION-ID") },
++#ifndef FLATPAK_DISABLE_GPG
+   { "gpg-import", 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &opt_gpg_import, N_("Import GPG key from FILE (- for stdin)"), N_("FILE") },
++#endif
+   { "no-filter", 0, 0, G_OPTION_ARG_NONE, &opt_no_filter, N_("Disable local filter"), NULL },
+   { "filter", 0, 0, G_OPTION_ARG_FILENAME, &opt_filter, N_("Set path to local filter FILE"), N_("FILE") },
+   { "disable", 0, 0, G_OPTION_ARG_NONE, &opt_disable, N_("Disable the remote"), NULL },
+@@ -111,6 +120,7 @@ get_config_from_opts (FlatpakDir *dir, const char *remote_name, gboolean *change
+   else
+     config = ostree_repo_copy_config (repo);
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   if (opt_no_gpg_verify)
+     {
+       g_key_file_set_boolean (config, group, "gpg-verify", FALSE);
+@@ -124,6 +134,10 @@ get_config_from_opts (FlatpakDir *dir, const char *remote_name, gboolean *change
+       g_key_file_set_boolean (config, group, "gpg-verify-summary", TRUE);
+       *changed = TRUE;
+     }
++#else
++  g_key_file_set_boolean (config, group, "gpg-verify", FALSE);
++  g_key_file_set_boolean (config, group, "gpg-verify-summary", FALSE);
++#endif
+ 
+   if (opt_url)
+     {
+@@ -333,6 +347,7 @@ flatpak_builtin_remote_modify (int argc, char **argv, GCancellable *cancellable,
+ 
+   config = get_config_from_opts (preferred_dir, remote_name, &changed);
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   if (opt_gpg_import != NULL)
+     {
+       gpg_data = flatpak_load_gpg_keys (opt_gpg_import, cancellable, error);
+@@ -340,6 +355,7 @@ flatpak_builtin_remote_modify (int argc, char **argv, GCancellable *cancellable,
+         return FALSE;
+       changed = TRUE;
+     }
++#endif
+ 
+   if (!changed)
+     return TRUE;
+-- 
+2.30.0
+

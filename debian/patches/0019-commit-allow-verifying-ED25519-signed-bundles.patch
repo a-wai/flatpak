@@ -1,0 +1,659 @@
+From f8e09ece88176c9eecd4a8c9e484ac6b76b7386c Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Wed, 10 Mar 2021 17:58:46 +0100
+Subject: [PATCH 19/26] commit: allow verifying ED25519-signed bundles
+
+Along with the new signature API, OSTree introduced a new file format
+for bundles signed with this API. This commit extends the
+`flatpak_bundle_load()` function so it can verify those signed bundles,
+and adds commit verification using OSTree's signature API.
+---
+ app/flatpak-builtins-build-import-bundle.c |   3 +-
+ app/flatpak-builtins-install.c             |   2 +-
+ common/flatpak-bundle-ref.c                |   9 +-
+ common/flatpak-bundle-ref.h                |   5 +-
+ common/flatpak-dir-private.h               |   2 +
+ common/flatpak-dir.c                       |  15 ++-
+ common/flatpak-installation.c              |   7 +-
+ common/flatpak-installation.h              |   1 +
+ common/flatpak-transaction.c               |  41 +++++--
+ common/flatpak-transaction.h               |   1 +
+ common/flatpak-utils-private.h             |   3 +
+ common/flatpak-utils.c                     | 128 ++++++++++++++++++++-
+ common/test-lib.c                          |   2 +-
+ system-helper/flatpak-system-helper.c      |   2 +-
+ tests/testlibrary.c                        |   6 +-
+ 15 files changed, 194 insertions(+), 33 deletions(-)
+
+diff --git a/app/flatpak-builtins-build-import-bundle.c b/app/flatpak-builtins-build-import-bundle.c
+index 91894b19..f70a32b0 100644
+--- a/app/flatpak-builtins-build-import-bundle.c
++++ b/app/flatpak-builtins-build-import-bundle.c
+@@ -152,7 +152,7 @@ import_bundle (OstreeRepo *repo, GFile *file,
+    * flatpak_pull_from_bundle() does that. */
+   metadata = flatpak_bundle_load (file, &to_checksum,
+                                   &bundle_ref,
+-                                  NULL, NULL, NULL,
++                                  NULL, NULL, NULL, NULL,
+                                   NULL, NULL, NULL, error);
+   if (metadata == NULL)
+     return NULL;
+@@ -165,6 +165,7 @@ import_bundle (OstreeRepo *repo, GFile *file,
+   g_print (_("Importing %s (%s)\n"), ref, to_checksum);
+   if (!flatpak_pull_from_bundle (repo, file,
+                                  NULL, ref, FALSE,
++                                 FALSE, NULL,
+                                  cancellable,
+                                  error))
+     return NULL;
+diff --git a/app/flatpak-builtins-install.c b/app/flatpak-builtins-install.c
+index 0751ff5e..81c1adfc 100644
+--- a/app/flatpak-builtins-install.c
++++ b/app/flatpak-builtins-install.c
+@@ -183,7 +183,7 @@ install_bundle (FlatpakDir *dir,
+   for (int i = 0; opt_sideload_repos != NULL && opt_sideload_repos[i] != NULL; i++)
+     flatpak_transaction_add_sideload_repo (transaction, opt_sideload_repos[i]);
+ 
+-  if (!flatpak_transaction_add_install_bundle (transaction, file, gpg_data, error))
++  if (!flatpak_transaction_add_install_bundle (transaction, file, gpg_data, NULL, error))
+     return FALSE;
+ 
+   if (!flatpak_transaction_run (transaction, cancellable, error))
+diff --git a/common/flatpak-bundle-ref.c b/common/flatpak-bundle-ref.c
+index 7ce4429c..ffad5d30 100644
+--- a/common/flatpak-bundle-ref.c
++++ b/common/flatpak-bundle-ref.c
+@@ -282,8 +282,9 @@ flatpak_bundle_ref_get_installed_size (FlatpakBundleRef *self)
+  * Returns: a new bundle ref.
+  */
+ FlatpakBundleRef *
+-flatpak_bundle_ref_new (GFile   *file,
+-                        GError **error)
++flatpak_bundle_ref_new (GFile    *file,
++                        GVariant *sign_data,
++                        GError  **error)
+ {
+   FlatpakRefKind kind;
+   FlatpakBundleRefPrivate *priv;
+@@ -303,8 +304,8 @@ flatpak_bundle_ref_new (GFile   *file,
+   guint64 installed_size;
+   g_autofree char *collection_id = NULL;
+ 
+-  metadata = flatpak_bundle_load (file, &commit, &full_ref, &origin, &runtime_repo, &metadata_contents, &installed_size,
+-                                  NULL, &collection_id, error);
++  metadata = flatpak_bundle_load (file, &commit, &full_ref, sign_data, &origin, &runtime_repo, &metadata_contents,
++                                  &installed_size, NULL, &collection_id, error);
+   if (metadata == NULL)
+     return NULL;
+ 
+diff --git a/common/flatpak-bundle-ref.h b/common/flatpak-bundle-ref.h
+index 20484dbd..2b213163 100644
+--- a/common/flatpak-bundle-ref.h
++++ b/common/flatpak-bundle-ref.h
+@@ -46,8 +46,9 @@ typedef struct
+   FlatpakRefClass parent_class;
+ } FlatpakBundleRefClass;
+ 
+-FLATPAK_EXTERN FlatpakBundleRef *flatpak_bundle_ref_new (GFile   *file,
+-                                                         GError **error);
++FLATPAK_EXTERN FlatpakBundleRef *flatpak_bundle_ref_new (GFile    *file,
++                                                         GVariant *sign_data,
++                                                         GError  **error);
+ FLATPAK_EXTERN GFile           *flatpak_bundle_ref_get_file (FlatpakBundleRef *self);
+ FLATPAK_EXTERN GBytes          *flatpak_bundle_ref_get_metadata (FlatpakBundleRef *self);
+ FLATPAK_EXTERN GBytes          *flatpak_bundle_ref_get_appstream (FlatpakBundleRef *self);
+diff --git a/common/flatpak-dir-private.h b/common/flatpak-dir-private.h
+index bbd4be82..d1b7f843 100644
+--- a/common/flatpak-dir-private.h
++++ b/common/flatpak-dir-private.h
+@@ -743,6 +743,7 @@ gboolean              flatpak_dir_install                                   (Fla
+ char *                flatpak_dir_ensure_bundle_remote                      (FlatpakDir                    *self,
+                                                                              GFile                         *file,
+                                                                              GBytes                        *extra_gpg_data,
++                                                                             GVariant                      *sign_data,
+                                                                              FlatpakDecomposed            **out_ref,
+                                                                              char                         **out_commit,
+                                                                              char                         **out_metadata,
+@@ -751,6 +752,7 @@ char *                flatpak_dir_ensure_bundle_remote                      (Fla
+                                                                              GError                       **error);
+ gboolean              flatpak_dir_install_bundle                            (FlatpakDir                    *self,
+                                                                              GFile                         *file,
++                                                                             GVariant                      *sign_data,
+                                                                              const char                    *remote,
+                                                                              FlatpakDecomposed            **out_ref,
+                                                                              GCancellable                  *cancellable,
+diff --git a/common/flatpak-dir.c b/common/flatpak-dir.c
+index 3046cad5..cd743940 100644
+--- a/common/flatpak-dir.c
++++ b/common/flatpak-dir.c
+@@ -9363,6 +9363,7 @@ char *
+ flatpak_dir_ensure_bundle_remote (FlatpakDir         *self,
+                                   GFile              *file,
+                                   GBytes             *extra_gpg_data,
++                                  GVariant           *sign_data,
+                                   FlatpakDecomposed **out_ref,
+                                   char              **out_checksum,
+                                   char              **out_metadata,
+@@ -9387,7 +9388,7 @@ flatpak_dir_ensure_bundle_remote (FlatpakDir         *self,
+     return NULL;
+ 
+   metadata = flatpak_bundle_load (file, &to_checksum,
+-                                  &ref,
++                                  &ref, sign_data,
+                                   &origin,
+                                   NULL, &fp_metadata, NULL,
+                                   &included_gpg_data,
+@@ -9426,7 +9427,7 @@ flatpak_dir_ensure_bundle_remote (FlatpakDir         *self,
+                                                  basename,
+                                                  flatpak_decomposed_get_ref (ref),
+                                                  gpg_data,
+-                                                 NULL,
++                                                 sign_data,
+                                                  collection_id,
+                                                  &created_remote,
+                                                  cancellable,
+@@ -9507,6 +9508,7 @@ flatpak_dir_check_add_remotes_config_dir (FlatpakDir *self,
+ gboolean
+ flatpak_dir_install_bundle (FlatpakDir         *self,
+                             GFile              *file,
++                            GVariant           *sign_data,
+                             const char         *remote,
+                             FlatpakDecomposed **out_ref,
+                             GCancellable       *cancellable,
+@@ -9519,6 +9521,7 @@ flatpak_dir_install_bundle (FlatpakDir         *self,
+   g_autofree char *origin = NULL;
+   g_autofree char *to_checksum = NULL;
+   gboolean gpg_verify;
++  gboolean sign_verify;
+ 
+   if (!flatpak_dir_check_add_remotes_config_dir (self, error))
+     return FALSE;
+@@ -9551,7 +9554,7 @@ flatpak_dir_install_bundle (FlatpakDir         *self,
+     return FALSE;
+ 
+   metadata = flatpak_bundle_load (file, &to_checksum,
+-                                  &ref,
++                                  &ref, sign_data,
+                                   &origin,
+                                   NULL, NULL,
+                                   NULL, NULL, NULL,
+@@ -9582,11 +9585,17 @@ flatpak_dir_install_bundle (FlatpakDir         *self,
+                                           &gpg_verify, error))
+     return FALSE;
+ 
++  if (!flatpak_dir_get_sign_verify (self->repo, remote,
++                                    &sign_verify, error))
++    return FALSE;
++
+   if (!flatpak_pull_from_bundle (self->repo,
+                                  file,
+                                  remote,
+                                  flatpak_decomposed_get_ref (ref),
+                                  gpg_verify,
++                                 sign_verify,
++                                 sign_data,
+                                  cancellable,
+                                  error))
+     return FALSE;
+diff --git a/common/flatpak-installation.c b/common/flatpak-installation.c
+index e8703855..e9ea18d8 100644
+--- a/common/flatpak-installation.c
++++ b/common/flatpak-installation.c
+@@ -1742,6 +1742,7 @@ flatpak_installation_load_app_overrides (FlatpakInstallation *self,
+ FlatpakInstalledRef *
+ flatpak_installation_install_bundle (FlatpakInstallation    *self,
+                                      GFile                  *file,
++                                     GVariant               *sign_data,
+                                      FlatpakProgressCallback progress,
+                                      gpointer                progress_data,
+                                      GCancellable           *cancellable,
+@@ -1758,7 +1759,7 @@ flatpak_installation_install_bundle (FlatpakInstallation    *self,
+   if (dir == NULL)
+     return NULL;
+ 
+-  remote = flatpak_dir_ensure_bundle_remote (dir, file, NULL, &ref, NULL, NULL, &created_remote, cancellable, error);
++  remote = flatpak_dir_ensure_bundle_remote (dir, file, NULL, sign_data, &ref, NULL, NULL, &created_remote, cancellable, error);
+   if (remote == NULL)
+     return NULL;
+ 
+@@ -1771,8 +1772,8 @@ flatpak_installation_install_bundle (FlatpakInstallation    *self,
+   if (!flatpak_dir_ensure_repo (dir_clone, cancellable, error))
+     return NULL;
+ 
+-  if (!flatpak_dir_install_bundle (dir_clone, file, remote, NULL,
+-                                   cancellable, error))
++  if (!flatpak_dir_install_bundle (dir_clone, file, sign_data, remote,
++                                   NULL, cancellable, error))
+     return NULL;
+ 
+   if (flatpak_decomposed_is_app (ref))
+diff --git a/common/flatpak-installation.h b/common/flatpak-installation.h
+index b9385c9d..92979be4 100644
+--- a/common/flatpak-installation.h
++++ b/common/flatpak-installation.h
+@@ -367,6 +367,7 @@ FLATPAK_EXTERN FlatpakInstalledRef * flatpak_installation_update_full (FlatpakIn
+ G_GNUC_DEPRECATED_FOR(flatpak_transaction_add_install_bundle)
+ FLATPAK_EXTERN FlatpakInstalledRef * flatpak_installation_install_bundle (FlatpakInstallation    *self,
+                                                                           GFile                  *file,
++                                                                          GVariant               *sign_data,
+                                                                           FlatpakProgressCallback progress,
+                                                                           gpointer                progress_data,
+                                                                           GCancellable           *cancellable,
+diff --git a/common/flatpak-transaction.c b/common/flatpak-transaction.c
+index ebfbe6ef..4cc501bd 100644
+--- a/common/flatpak-transaction.c
++++ b/common/flatpak-transaction.c
+@@ -140,8 +140,9 @@ typedef struct _BundleData                BundleData;
+ 
+ struct _BundleData
+ {
+-  GFile  *file;
+-  GBytes *gpg_data;
++  GFile    *file;
++  GBytes   *gpg_data;
++  GVariant *sign_data;
+ };
+ 
+ typedef struct {
+@@ -239,14 +240,17 @@ static gboolean request_required_tokens (FlatpakTransaction *self,
+ 
+ 
+ static BundleData *
+-bundle_data_new (GFile  *file,
+-                 GBytes *gpg_data)
++bundle_data_new (GFile    *file,
++                 GBytes   *gpg_data,
++                 GVariant *sign_data)
+ {
+   BundleData *data = g_new0 (BundleData, 1);
+ 
+   data->file = g_object_ref (file);
+   if (gpg_data)
+     data->gpg_data = g_bytes_ref (gpg_data);
++  if (sign_data)
++    data->sign_data = g_variant_ref (sign_data);
+ 
+   return data;
+ }
+@@ -256,6 +260,11 @@ bundle_data_free (BundleData *data)
+ {
+   g_clear_object (&data->file);
+   g_clear_object (&data->gpg_data);
++  if (data->sign_data)
++    {
++      g_variant_unref (data->sign_data);
++      data->sign_data = NULL;
++    }
+   g_free (data);
+ }
+ 
+@@ -2651,11 +2660,12 @@ gboolean
+ flatpak_transaction_add_install_bundle (FlatpakTransaction *self,
+                                         GFile              *file,
+                                         GBytes             *gpg_data,
++                                        GVariant           *sign_data,
+                                         GError            **error)
+ {
+   FlatpakTransactionPrivate *priv = flatpak_transaction_get_instance_private (self);
+ 
+-  priv->bundles = g_list_append (priv->bundles, bundle_data_new (file, gpg_data));
++  priv->bundles = g_list_append (priv->bundles, bundle_data_new (file, gpg_data, sign_data));
+ 
+   return TRUE;
+ }
+@@ -4126,6 +4136,7 @@ flatpak_transaction_resolve_flatpakrefs (FlatpakTransaction *self,
+ static gboolean
+ handle_runtime_repo_deps_from_bundle (FlatpakTransaction *self,
+                                       GFile              *file,
++                                      GVariant           *sign_data,
+                                       GCancellable       *cancellable,
+                                       GError            **error)
+ {
+@@ -4141,6 +4152,7 @@ handle_runtime_repo_deps_from_bundle (FlatpakTransaction *self,
+   metadata = flatpak_bundle_load (file,
+                                   NULL,
+                                   &ref,
++                                  sign_data,
+                                   NULL,
+                                   &dep_url,
+                                   NULL,
+@@ -4174,15 +4186,15 @@ flatpak_transaction_resolve_bundles (FlatpakTransaction *self,
+       g_autoptr(FlatpakDecomposed) ref = NULL;
+       gboolean created_remote;
+ 
+-      if (!handle_runtime_repo_deps_from_bundle (self, data->file, cancellable, error))
++      if (!handle_runtime_repo_deps_from_bundle (self, data->file, data->sign_data, cancellable, error))
+         return FALSE;
+ 
+       if (!flatpak_dir_ensure_repo (priv->dir, cancellable, error))
+         return FALSE;
+ 
+       remote = flatpak_dir_ensure_bundle_remote (priv->dir, data->file, data->gpg_data,
+-                                                 &ref, &commit, &metadata, &created_remote,
+-                                                 NULL, error);
++                                                 data->sign_data, &ref, &commit, &metadata,
++                                                 &created_remote, NULL, error);
+       if (remote == NULL)
+         return FALSE;
+ 
+@@ -4372,12 +4384,23 @@ _run_op_kind (FlatpakTransaction           *self,
+   else if (op->kind == FLATPAK_TRANSACTION_OPERATION_INSTALL_BUNDLE)
+     {
+       g_autoptr(FlatpakTransactionProgress) progress = flatpak_transaction_progress_new ();
++      BundleData *data = NULL;
++      for (GList *l = priv->bundles; l != NULL; l = l->next)
++        {
++          BundleData *d = l->data;
++          if (d->file == op->bundle)
++          {
++              data = d;
++              break;
++          }
++        }
++
+       emit_new_op (self, op, progress);
+       if (op->resolved_metakey && !flatpak_check_required_version (flatpak_decomposed_get_ref (op->ref),
+                                                                    op->resolved_metakey, error))
+         res = FALSE;
+       else
+-        res = flatpak_dir_install_bundle (priv->dir, op->bundle,
++        res = flatpak_dir_install_bundle (priv->dir, op->bundle, data ? data->sign_data : NULL,
+                                           op->remote, NULL,
+                                           cancellable, error);
+       flatpak_transaction_progress_done (progress);
+diff --git a/common/flatpak-transaction.h b/common/flatpak-transaction.h
+index 37c4144d..814a5a66 100644
+--- a/common/flatpak-transaction.h
++++ b/common/flatpak-transaction.h
+@@ -297,6 +297,7 @@ FLATPAK_EXTERN
+ gboolean            flatpak_transaction_add_install_bundle (FlatpakTransaction *self,
+                                                             GFile              *file,
+                                                             GBytes             *gpg_data,
++                                                            GVariant           *sign_data,
+                                                             GError            **error);
+ FLATPAK_EXTERN
+ gboolean            flatpak_transaction_add_install_flatpakref (FlatpakTransaction *self,
+diff --git a/common/flatpak-utils-private.h b/common/flatpak-utils-private.h
+index 98f1adb8..9df8f0af 100644
+--- a/common/flatpak-utils-private.h
++++ b/common/flatpak-utils-private.h
+@@ -519,6 +519,7 @@ gboolean flatpak_mtree_create_dir (OstreeRepo         *repo,
+ GVariant *flatpak_bundle_load (GFile              *file,
+                                char              **commit,
+                                FlatpakDecomposed **ref,
++                               GVariant           *sign_keys,
+                                char              **origin,
+                                char              **runtime_repo,
+                                char              **app_metadata,
+@@ -532,6 +533,8 @@ gboolean flatpak_pull_from_bundle (OstreeRepo   *repo,
+                                    const char   *remote,
+                                    const char   *ref,
+                                    gboolean      require_gpg_signature,
++                                   gboolean      require_signature,
++                                   GVariant     *sign_keys,
+                                    GCancellable *cancellable,
+                                    GError      **error);
+ 
+diff --git a/common/flatpak-utils.c b/common/flatpak-utils.c
+index c402a8e1..ff15b8de 100644
+--- a/common/flatpak-utils.c
++++ b/common/flatpak-utils.c
+@@ -6638,6 +6638,8 @@ flatpak_xml_parse (GInputStream *in,
+ #define OSTREE_STATIC_DELTA_META_ENTRY_FORMAT "(uayttay)"
+ #define OSTREE_STATIC_DELTA_FALLBACK_FORMAT "(yaytt)"
+ #define OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT "(a{sv}tayay" OSTREE_COMMIT_GVARIANT_STRING "aya" OSTREE_STATIC_DELTA_META_ENTRY_FORMAT "a" OSTREE_STATIC_DELTA_FALLBACK_FORMAT ")"
++#define OSTREE_STATIC_DELTA_SIGNED_FORMAT "(taya{sv})"
++#define OSTREE_STATIC_DELTA_SIGNED_MAGIC  0x4F535453474E4454 /* OSTSGNDT */
+ 
+ static inline guint64
+ maybe_swap_endian_u64 (gboolean swap,
+@@ -6673,10 +6675,74 @@ flatpak_bundle_get_installed_size (GVariant *bundle, gboolean byte_swap)
+   return total_usize;
+ }
+ 
++static gboolean
++is_signed_delta (GVariant *delta)
++{
++  g_autoptr(GVariant) magic_v = NULL;
++  g_autoptr(GVariant) swapped_v = NULL;
++
++  magic_v = g_variant_get_child_value (delta, 0);
++  swapped_v = g_variant_byteswap (magic_v);
++
++  return (g_variant_get_uint64 (magic_v)   == OSTREE_STATIC_DELTA_SIGNED_MAGIC ||
++          g_variant_get_uint64 (swapped_v) == OSTREE_STATIC_DELTA_SIGNED_MAGIC);
++}
++
++static gboolean
++bundle_verify_signatures (GBytes *data,
++                          GBytes *signatures,
++                          GVariant *keys,
++                          GError **error)
++{
++  g_autoptr (GPtrArray) verifiers = NULL;
++  g_autoptr (GVariant) sigs_v = NULL;
++  g_autoptr (GError) my_error = NULL;
++  GVariantDict sigs_dict;
++  GVariantDict keys_dict;
++
++  sigs_v = g_variant_new_from_bytes (G_VARIANT_TYPE_VARDICT, signatures, FALSE);
++  g_variant_dict_init (&sigs_dict, sigs_v);
++  g_variant_dict_init (&keys_dict, keys);
++
++  verifiers = ostree_sign_get_all ();
++  for (guint i = 0; i < verifiers->len; i++)
++    {
++      g_autoptr (GVariant) sigs = NULL;
++      g_autoptr (GVariant) keys_v = NULL;
++      OstreeSign *sign = verifiers->pdata[i];
++      g_autofree char *msg = NULL;
++
++      sigs = g_variant_dict_lookup_value (&sigs_dict, ostree_sign_metadata_key (sign),
++                                          G_VARIANT_TYPE (ostree_sign_metadata_format (sign)));
++      if (!sigs)
++        continue;
++
++      keys_v = g_variant_dict_lookup_value (&keys_dict, ostree_sign_metadata_key (sign),
++                                            G_VARIANT_TYPE_STRING_ARRAY);
++      if (keys_v)
++        {
++          gsize len;
++          g_autofree const gchar **keys_array = g_variant_get_strv (keys_v, &len);
++
++          for (guint j = 0; j < len; j++)
++            {
++              g_autoptr (GVariant) pkey = g_variant_new_string (keys_array[j]);
++              ostree_sign_add_pk (sign, pkey, NULL);
++            }
++        }
++
++      if (!ostree_sign_data_verify (sign, data, sigs, &msg, &my_error))
++          return flatpak_fail (error, _("Couldn't verify bundle: %s"), my_error->message);
++    }
++
++  return TRUE;
++}
++
+ GVariant *
+ flatpak_bundle_load (GFile              *file,
+                      char              **commit,
+                      FlatpakDecomposed **ref,
++                     GVariant           *sign_keys,
+                      char              **origin,
+                      char              **runtime_repo,
+                      char              **app_metadata,
+@@ -6690,6 +6756,7 @@ flatpak_bundle_load (GFile              *file,
+   g_autoptr(GBytes) bytes = NULL;
+   g_autoptr(GBytes) copy = NULL;
+   g_autoptr(GVariant) to_csum_v = NULL;
++  g_autoptr(GVariant) superblock = NULL;
+ 
+   guint8 endianness_char;
+   gboolean byte_swap = FALSE;
+@@ -6702,14 +6769,30 @@ flatpak_bundle_load (GFile              *file,
+   bytes = g_mapped_file_get_bytes (mfile);
+   g_mapped_file_unref (mfile);
+ 
+-  delta = g_variant_new_from_bytes (G_VARIANT_TYPE (OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT), bytes, FALSE);
++  delta = g_variant_new_from_bytes (G_VARIANT_TYPE (OSTREE_STATIC_DELTA_SIGNED_FORMAT), bytes, FALSE);
+   g_variant_ref_sink (delta);
++  if (is_signed_delta (delta))
++    {
++      g_autoptr (GVariant) super_v = g_variant_get_child_value (delta, 1);
++      g_autoptr (GVariant) signatures_v = g_variant_get_child_value (delta, 2);
++      g_autoptr (GBytes) super_bytes = g_variant_get_data_as_bytes (super_v);
++      g_autoptr (GBytes) signatures_bytes = g_variant_get_data_as_bytes (signatures_v);
+ 
+-  to_csum_v = g_variant_get_child_value (delta, 3);
++      if (!bundle_verify_signatures (super_bytes, signatures_bytes, sign_keys, error))
++        return NULL;
++
++      superblock = g_variant_new_from_bytes (G_VARIANT_TYPE (OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT), super_bytes, FALSE);
++    }
++  else
++    {
++      superblock = g_variant_new_from_bytes (G_VARIANT_TYPE (OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT), bytes, FALSE);
++    }
++
++  to_csum_v = g_variant_get_child_value (superblock, 3);
+   if (!ostree_validate_structureof_csum_v (to_csum_v, error))
+     return NULL;
+ 
+-  metadata = g_variant_get_child_value (delta, 0);
++  metadata = g_variant_get_child_value (superblock, 0);
+ 
+   if (g_variant_lookup (metadata, "ostree.endianness", "y", &endianness_char))
+     {
+@@ -6734,7 +6817,7 @@ flatpak_bundle_load (GFile              *file,
+     *commit = ostree_checksum_from_bytes_v (to_csum_v);
+ 
+   if (installed_size)
+-    *installed_size = flatpak_bundle_get_installed_size (delta, byte_swap);
++    *installed_size = flatpak_bundle_get_installed_size (superblock, byte_swap);
+ 
+   if (ref != NULL)
+     {
+@@ -6816,6 +6899,8 @@ flatpak_pull_from_bundle (OstreeRepo   *repo,
+                           const char   *remote,
+                           const char   *ref,
+                           gboolean      require_gpg_signature,
++                          gboolean      require_signature,
++                          GVariant     *sign_keys,
+                           GCancellable *cancellable,
+                           GError      **error)
+ {
+@@ -6827,13 +6912,16 @@ flatpak_pull_from_bundle (OstreeRepo   *repo,
+ #ifndef FLATPAK_DISABLE_GPG
+   g_autoptr(OstreeGpgVerifyResult) gpg_result = NULL;
+ #endif
++  g_autoptr(GPtrArray) verifiers = NULL;
+   g_autoptr(GError) my_error = NULL;
+   g_autoptr(GVariant) metadata = NULL;
++  GVariantDict keys_dict;
+   gboolean metadata_valid;
+   g_autofree char *remote_collection_id = NULL;
+   g_autofree char *collection_id = NULL;
++  gboolean verified = FALSE;
+ 
+-  metadata = flatpak_bundle_load (file, &to_checksum, NULL, NULL, NULL, &metadata_contents, NULL, NULL, &collection_id, error);
++  metadata = flatpak_bundle_load (file, &to_checksum, NULL, sign_keys, NULL, NULL, &metadata_contents, NULL, NULL, &collection_id, error);
+   if (metadata == NULL)
+     return FALSE;
+ 
+@@ -6888,6 +6976,36 @@ flatpak_pull_from_bundle (OstreeRepo   *repo,
+     }
+ #endif
+ 
++  verifiers = ostree_sign_get_all ();
++  g_variant_dict_init (&keys_dict, sign_keys);
++  for (guint i = 0; i < verifiers->len; i++)
++    {
++      OstreeSign *sign = verifiers->pdata[i];
++      g_autoptr (GVariant) keys_v = NULL;
++
++      if (g_str_equal (ostree_sign_get_name (sign), "dummy"))
++        continue;
++
++      keys_v = g_variant_dict_lookup_value (&keys_dict, ostree_sign_metadata_key (sign),
++                                            G_VARIANT_TYPE_STRING_ARRAY);
++      if (keys_v)
++        {
++          gsize len;
++          g_autofree const gchar **keys_array = g_variant_get_strv (keys_v, &len);
++
++          for (guint j = 0; j < len; j++)
++            {
++              g_autoptr (GVariant) pkey = g_variant_new_string (keys_array[j]);
++              ostree_sign_add_pk (sign, pkey, NULL);
++            }
++        }
++
++      verified |= ostree_sign_commit_verify (sign, repo, to_checksum, NULL, cancellable, NULL);
++    }
++
++  if (!verified && require_signature)
++    return flatpak_fail_error (error, FLATPAK_ERROR_UNTRUSTED, _("signatures found, but none could be verified using trusted keys"));
++
+   if (!ostree_repo_read_commit (repo, to_checksum, &root, NULL, NULL, error))
+     return FALSE;
+ 
+diff --git a/common/test-lib.c b/common/test-lib.c
+index 4046d83d..3d9c00c3 100644
+--- a/common/test-lib.c
++++ b/common/test-lib.c
+@@ -160,7 +160,7 @@ main (int argc, char *argv[])
+   g_print ("\n**** Loading bundle\n");
+   {
+     g_autoptr(GFile) f = g_file_new_for_commandline_arg ("tests/hello.pak");
+-    g_autoptr(FlatpakBundleRef) bundle = flatpak_bundle_ref_new (f, &error);
++    g_autoptr(FlatpakBundleRef) bundle = flatpak_bundle_ref_new (f, NULL, &error);
+     if (bundle == NULL)
+       {
+         g_print ("Error loading bundle: %s\n", error->message);
+diff --git a/system-helper/flatpak-system-helper.c b/system-helper/flatpak-system-helper.c
+index 3698f83a..ddf9f2eb 100644
+--- a/system-helper/flatpak-system-helper.c
++++ b/system-helper/flatpak-system-helper.c
+@@ -1020,7 +1020,7 @@ handle_install_bundle (FlatpakSystemHelper   *object,
+       return G_DBUS_METHOD_INVOCATION_HANDLED;
+     }
+ 
+-  if (!flatpak_dir_install_bundle (system, bundle_file, arg_remote, &ref, NULL, &error))
++  if (!flatpak_dir_install_bundle (system, bundle_file, NULL, arg_remote, &ref, NULL, &error))
+     {
+       flatpak_invocation_return_error (invocation, error, "Error installing bundle");
+       return G_DBUS_METHOD_INVOCATION_HANDLED;
+diff --git a/tests/testlibrary.c b/tests/testlibrary.c
+index 6c1965ec..36b11035 100644
+--- a/tests/testlibrary.c
++++ b/tests/testlibrary.c
+@@ -4173,7 +4173,7 @@ test_bundle (void)
+ 
+   file = g_file_new_for_path ("/dev/null");
+ 
+-  ref = flatpak_bundle_ref_new (file, &error);
++  ref = flatpak_bundle_ref_new (file, NULL, &error);
+   g_assert_nonnull (error);
+   g_assert_null (ref);
+   g_clear_error (&error);
+@@ -4182,7 +4182,7 @@ test_bundle (void)
+ 
+   path = g_build_filename (testdir, "bundles", "hello.flatpak", NULL);
+   file = g_file_new_for_path (path);
+-  ref = flatpak_bundle_ref_new (file, &error);
++  ref = flatpak_bundle_ref_new (file, NULL, &error);
+   g_assert_no_error (error);
+   g_assert_nonnull (ref);
+ 
+@@ -4243,7 +4243,7 @@ test_install_bundle (void)
+   file = g_file_new_for_path (path);
+ 
+   G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+-  ref = flatpak_installation_install_bundle (inst, file, NULL, NULL, NULL, &error);
++  ref = flatpak_installation_install_bundle (inst, file, NULL, NULL, NULL, NULL, &error);
+   G_GNUC_END_IGNORE_DEPRECATIONS
+   g_assert_no_error (error);
+   g_assert_nonnull (ref);
+-- 
+2.30.0
+

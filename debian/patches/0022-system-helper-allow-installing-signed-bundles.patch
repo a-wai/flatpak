@@ -1,0 +1,114 @@
+From c3bd51da1c45e3bac89e80e1d8a5dbbf6c7dd8db Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Wed, 10 Mar 2021 18:01:34 +0100
+Subject: [PATCH 22/26] system-helper: allow installing signed bundles
+
+For most use cases, ED25519 public keys are stored in the remote
+configuration. Bundles, however, are processed differently, and require
+passing the keys to `flatpak_dir_install_bundle()`, which causes issues
+when using system-helper.
+
+In order to solve that problem, this commit extends the DBus protocol
+with a new argument for the `InstallBundle` method. That way we'll be
+able to pass the public keys GVariant for system-helper to be able to
+verify and install signed bundles.
+---
+ common/flatpak-dir.c                  | 11 +++++++++--
+ data/org.freedesktop.Flatpak.xml      |  1 +
+ system-helper/flatpak-system-helper.c |  9 +++++++--
+ 3 files changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/common/flatpak-dir.c b/common/flatpak-dir.c
+index cd743940..026da54d 100644
+--- a/common/flatpak-dir.c
++++ b/common/flatpak-dir.c
+@@ -2155,6 +2155,7 @@ flatpak_dir_system_helper_call_install_bundle (FlatpakDir   *self,
+                                                guint         arg_flags,
+                                                const gchar  *arg_remote,
+                                                const gchar  *arg_installation,
++                                               GVariant     *arg_sign_data,
+                                                gchar       **out_ref,
+                                                GCancellable *cancellable,
+                                                GError      **error)
+@@ -2164,11 +2165,12 @@ flatpak_dir_system_helper_call_install_bundle (FlatpakDir   *self,
+ 
+   g_autoptr(GVariant) ret =
+     flatpak_dir_system_helper_call (self, "InstallBundle",
+-                                    g_variant_new ("(^ayuss)",
++                                    g_variant_new ("(^ayussv)",
+                                                    arg_bundle_path,
+                                                    arg_flags,
+                                                    arg_remote,
+-                                                   arg_installation),
++                                                   arg_installation,
++                                                   arg_sign_data),
+                                     G_VARIANT_TYPE ("(s)"), NULL,
+                                     cancellable, error);
+   if (ret == NULL)
+@@ -9529,11 +9531,16 @@ flatpak_dir_install_bundle (FlatpakDir         *self,
+   if (flatpak_dir_use_system_helper (self, NULL))
+     {
+       const char *installation = flatpak_dir_get_id (self);
++      g_autoptr(GVariant) empty_sign_data = NULL;
++
++      if (!sign_data)
++        empty_sign_data = g_variant_ref_sink (g_variant_new_from_data (G_VARIANT_TYPE_VARDICT, "", 0, TRUE, NULL, NULL));
+ 
+       if (!flatpak_dir_system_helper_call_install_bundle (self,
+                                                           flatpak_file_get_path_cached (file),
+                                                           0, remote,
+                                                           installation ? installation : "",
++                                                          sign_data ? sign_data : empty_sign_data,
+                                                           &ref_str,
+                                                           cancellable,
+                                                           error))
+diff --git a/data/org.freedesktop.Flatpak.xml b/data/org.freedesktop.Flatpak.xml
+index 6318b326..2dffd433 100644
+--- a/data/org.freedesktop.Flatpak.xml
++++ b/data/org.freedesktop.Flatpak.xml
+@@ -249,6 +249,7 @@
+       <arg type='u' name='flags' direction='in'/>
+       <arg type='s' name='remote' direction='in'/>
+       <arg type='s' name='installation' direction='in'/>
++      <arg type='v' name='sign_data' direction='in'/>
+       <arg type='s' name='ref' direction='out'/>
+     </method>
+ 
+diff --git a/system-helper/flatpak-system-helper.c b/system-helper/flatpak-system-helper.c
+index ddf9f2eb..cbf0352f 100644
+--- a/system-helper/flatpak-system-helper.c
++++ b/system-helper/flatpak-system-helper.c
+@@ -990,15 +990,20 @@ handle_install_bundle (FlatpakSystemHelper   *object,
+                        const gchar           *arg_bundle_path,
+                        guint32                arg_flags,
+                        const gchar           *arg_remote,
+-                       const gchar           *arg_installation)
++                       const gchar           *arg_installation,
++                       GVariant              *arg_sign_data)
+ {
+   g_autoptr(FlatpakDir) system = NULL;
+   g_autoptr(GFile) bundle_file = g_file_new_for_path (arg_bundle_path);
+   g_autoptr(GError) error = NULL;
+   g_autoptr(FlatpakDecomposed) ref = NULL;
++  g_autoptr(GVariant) sign_data = NULL;
+ 
+   g_debug ("InstallBundle %s %u %s %s", arg_bundle_path, arg_flags, arg_remote, arg_installation);
+ 
++  if (arg_sign_data)
++    sign_data = g_variant_get_child_value (arg_sign_data, 0);
++
+   system = dir_get_system (arg_installation, get_sender_pid (invocation), &error);
+   if (system == NULL)
+     {
+@@ -1020,7 +1025,7 @@ handle_install_bundle (FlatpakSystemHelper   *object,
+       return G_DBUS_METHOD_INVOCATION_HANDLED;
+     }
+ 
+-  if (!flatpak_dir_install_bundle (system, bundle_file, NULL, arg_remote, &ref, NULL, &error))
++  if (!flatpak_dir_install_bundle (system, bundle_file, sign_data, arg_remote, &ref, NULL, &error))
+     {
+       flatpak_invocation_return_error (invocation, error, "Error installing bundle");
+       return G_DBUS_METHOD_INVOCATION_HANDLED;
+-- 
+2.30.0
+

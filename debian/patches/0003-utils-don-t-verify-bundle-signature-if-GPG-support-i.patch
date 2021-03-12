@@ -1,0 +1,49 @@
+From d3aa9e5e2164fbb57aa22a854385d52d1ed95ed8 Mon Sep 17 00:00:00 2001
+From: Arnaud Ferraris <arnaud.ferraris@collabora.com>
+Date: Fri, 26 Feb 2021 15:56:45 +0100
+Subject: [PATCH 03/26] utils: don't verify bundle signature if GPG support is
+ disabled
+
+When building flatpak without GPG support, it feels reasonable to assume
+ostree won't have GPG support either. Trying to verify a bundle's
+signature would therefore fail and prevent installing the bundle.
+
+In order to preserve this feature, bundle verification is therefore
+disabled along with GPG support.
+---
+ common/flatpak-utils.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/common/flatpak-utils.c b/common/flatpak-utils.c
+index 6cb6d5f8..7fc5df57 100644
+--- a/common/flatpak-utils.c
++++ b/common/flatpak-utils.c
+@@ -6663,7 +6663,9 @@ flatpak_pull_from_bundle (OstreeRepo   *repo,
+   g_autoptr(GFile) root = NULL;
+   g_autoptr(GFile) metadata_file = NULL;
+   g_autoptr(GInputStream) in = NULL;
++#ifndef FLATPAK_DISABLE_GPG
+   g_autoptr(OstreeGpgVerifyResult) gpg_result = NULL;
++#endif
+   g_autoptr(GError) my_error = NULL;
+   g_autoptr(GVariant) metadata = NULL;
+   gboolean metadata_valid;
+@@ -6696,6 +6698,7 @@ flatpak_pull_from_bundle (OstreeRepo   *repo,
+                                                  error))
+     return FALSE;
+ 
++#ifndef FLATPAK_DISABLE_GPG
+   gpg_result = ostree_repo_verify_commit_ext (repo, to_checksum,
+                                               NULL, NULL, cancellable, &my_error);
+   if (gpg_result == NULL)
+@@ -6722,6 +6725,7 @@ flatpak_pull_from_bundle (OstreeRepo   *repo,
+           require_gpg_signature)
+         return flatpak_fail_error (error, FLATPAK_ERROR_UNTRUSTED, _("GPG signatures found, but none are in trusted keyring"));
+     }
++#endif
+ 
+   if (!ostree_repo_read_commit (repo, to_checksum, &root, NULL, NULL, error))
+     return FALSE;
+-- 
+2.30.0
+
