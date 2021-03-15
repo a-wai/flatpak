@@ -1,3 +1,11 @@
+flatpak (1.10.1-4apertis1) UNRELEASED; urgency=medium
+
+  * Sync updates from Debian Bullseye
+  * Drop patch Disable-failing-tests-during-package-build.patch. Not needed
+    anymore
+
+ -- Ritesh Raj Sarraf <ritesh.sarraf@collabora.com>  Mon, 15 Mar 2021 16:20:14 +0530
+
 flatpak (1.10.1-4) unstable; urgency=high
 
   * d/p/Disallow-and-u-usage-in-desktop-files.patch:
